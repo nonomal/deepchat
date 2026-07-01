@@ -1,3 +1,4 @@
+import logger from '@shared/logger'
 import { BrowserWindow } from 'electron'
 import { randomBytes } from 'crypto'
 import { is } from '@electron-toolkit/utils'
@@ -16,18 +17,18 @@ export class GitHubCopilotOAuth {
   constructor(private config: GitHubOAuthConfig) {}
 
   /**
-   * 启动GitHub OAuth登录流程
+   * Start GitHub OAuth login process
    */
   async startLogin(): Promise<string> {
     return new Promise((resolve, reject) => {
-      // 生成随机state用于安全验证
+      // Generate random state for security verification
       this.state = randomBytes(16).toString('hex')
 
-      // 构建授权URL
+      // Build authorization URL
       const authUrl = this.buildAuthUrl()
-      console.log('Starting GitHub OAuth with URL:', authUrl)
+      logger.info('Starting GitHub OAuth with URL:', authUrl)
 
-      // 创建授权窗口
+      // Create authorization window
       this.authWindow = new BrowserWindow({
         width: 500,
         height: 700,
@@ -38,56 +39,56 @@ export class GitHubCopilotOAuth {
           webSecurity: true
         },
         autoHideMenuBar: true,
-        title: 'GitHub Copilot 授权'
+        title: 'GitHub Copilot Authorization'
       })
 
-      // 监听URL变化以捕获授权回调
+      // Monitor URL changes to capture authorization callback
       this.authWindow.webContents.on('will-redirect', (_event, url) => {
-        console.log('Redirecting to:', url)
+        logger.info('Redirecting to:', url)
         this.handleCallback(url, resolve, reject)
       })
 
-      // 注意：did-get-redirect-request 在新版本Electron中已废弃
+      // Note: did-get-redirect-request is deprecated in newer Electron versions
       // this.authWindow.webContents.on('did-get-redirect-request', (event, oldUrl, newUrl) => {
       //   console.log('Redirect request:', oldUrl, '->', newUrl)
       //   this.handleCallback(newUrl, resolve, reject)
       // })
 
-      // 监听导航事件
+      // Monitor navigation events
       this.authWindow.webContents.on('did-navigate', (_event, url) => {
-        console.log('Navigated to:', url)
+        logger.info('Navigated to:', url)
         this.handleCallback(url, resolve, reject)
       })
 
-      // 监听新窗口事件（GitHub可能在新窗口中打开）
+      // Monitor new window events (GitHub may open in new window)
       this.authWindow.webContents.setWindowOpenHandler(({ url }) => {
-        console.log('New window requested for:', url)
+        logger.info('New window requested for:', url)
         this.handleCallback(url, resolve, reject)
         return { action: 'deny' }
       })
 
-      // 处理窗口关闭
+      // Handle window close
       this.authWindow.on('closed', () => {
         this.authWindow = null
-        reject(new Error('用户取消了授权'))
+        reject(new Error('User cancelled authorization'))
       })
 
-      // 加载授权页面
+      // Load authorization page
       this.authWindow.loadURL(authUrl)
       this.authWindow.show()
 
-      // 设置超时
+      // Set timeout
       setTimeout(() => {
         if (this.authWindow) {
           this.closeWindow()
-          reject(new Error('授权超时'))
+          reject(new Error('Authorization timeout'))
         }
-      }, 300000) // 5分钟超时
+      }, 300000) // 5 minute timeout
     })
   }
 
   /**
-   * 构建GitHub OAuth授权URL
+   * Build GitHub OAuth authorization URL
    */
   private buildAuthUrl(): string {
     const params = new URLSearchParams({
@@ -102,7 +103,7 @@ export class GitHubCopilotOAuth {
   }
 
   /**
-   * 处理OAuth回调
+   * Handle OAuth callback
    */
   private handleCallback(
     url: string,
@@ -112,26 +113,26 @@ export class GitHubCopilotOAuth {
     try {
       const urlObj = new URL(url)
 
-      // 检查是否是我们的回调URL
+      // Check if this is our callback URL
       if (url.startsWith(this.config.redirectUri)) {
         const code = urlObj.searchParams.get('code')
         const error = urlObj.searchParams.get('error')
         const returnedState = urlObj.searchParams.get('state')
 
-        // 验证state参数
+        // Verify state parameter
         if (returnedState !== this.state) {
           console.error('State mismatch:', returnedState, 'vs', this.state)
           this.closeWindow()
-          reject(new Error('安全验证失败：state参数不匹配'))
+          reject(new Error('Security verification failed: state parameter mismatch'))
           return
         }
 
         if (error) {
           console.error('OAuth error:', error)
           this.closeWindow()
-          reject(new Error(`GitHub授权失败: ${error}`))
+          reject(new Error(`GitHub authorization failed: ${error}`))
         } else if (code) {
-          console.log('OAuth success, received code:', code)
+          logger.info('OAuth success, received authorization code')
           this.closeWindow()
           resolve(code)
         } else {
@@ -141,12 +142,12 @@ export class GitHubCopilotOAuth {
     } catch (error) {
       console.error('Error parsing callback URL:', error)
       this.closeWindow()
-      reject(new Error('解析回调URL失败'))
+      reject(new Error('Failed to parse callback URL'))
     }
   }
 
   /**
-   * 用授权码交换访问令牌
+   * Exchange authorization code for access token
    */
   async exchangeCodeForToken(code: string): Promise<string> {
     try {
@@ -191,7 +192,7 @@ export class GitHubCopilotOAuth {
   }
 
   /**
-   * 验证访问令牌
+   * Validate access token
    */
   async validateToken(token: string): Promise<boolean> {
     try {
@@ -210,7 +211,7 @@ export class GitHubCopilotOAuth {
   }
 
   /**
-   * 关闭授权窗口
+   * Close authorization window
    */
   private closeWindow(): void {
     if (this.authWindow && !this.authWindow.isDestroyed()) {
@@ -220,35 +221,36 @@ export class GitHubCopilotOAuth {
   }
 }
 
-// GitHub Copilot OAuth配置
-export function createGitHubCopilotOAuth(): GitHubCopilotOAuth {
-  // 从环境变量读取 GitHub OAuth 配置
-  const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID
+// GitHub Copilot OAuth configuration
+export function createGitHubCopilotOAuth(clientIdOverride?: string): GitHubCopilotOAuth {
+  // Read GitHub OAuth configuration from environment variables
+  const clientId = clientIdOverride?.trim() || import.meta.env.VITE_GITHUB_CLIENT_ID
   const clientSecret = import.meta.env.VITE_GITHUB_CLIENT_SECRET
   const redirectUri =
     import.meta.env.VITE_GITHUB_REDIRECT_URI || 'https://deepchatai.cn/auth/github/callback'
 
-  console.log('GitHub OAuth Configuration:')
-  console.log('- Client ID configured:', clientId ? '✅' : '❌')
-  console.log('- Client Secret configured:', clientSecret ? '✅' : '❌')
-  console.log('- Redirect URI:', redirectUri)
-  console.log('- Environment variables check:')
-  console.log(
+  logger.info('GitHub OAuth Configuration:')
+  logger.info('- Client ID configured:', clientId ? '✅' : '❌')
+  logger.info('- Client ID override provided:', clientIdOverride ? '✅' : '❌')
+  logger.info('- Client Secret configured:', clientSecret ? '✅' : '❌')
+  logger.info('- Redirect URI:', redirectUri)
+  logger.info('- Environment variables check:')
+  logger.info(
     '  - import.meta.env.VITE_GITHUB_CLIENT_ID:',
     import.meta.env.VITE_GITHUB_CLIENT_ID ? 'EXISTS' : 'NOT SET'
   )
-  console.log(
+  logger.info(
     '  - import.meta.env.VITE_GITHUB_CLIENT_SECRET:',
     import.meta.env.VITE_GITHUB_CLIENT_SECRET ? 'EXISTS' : 'NOT SET'
   )
-  console.log(
+  logger.info(
     '  - import.meta.env.VITE_GITHUB_REDIRECT_URI:',
     import.meta.env.VITE_GITHUB_REDIRECT_URI ? 'EXISTS' : 'NOT SET'
   )
 
   if (!clientId) {
     throw new Error(
-      'GITHUB_CLIENT_ID environment variable is required. Please create a .env file with your GitHub OAuth Client ID. You can use either GITHUB_CLIENT_ID or VITE_GITHUB_CLIENT_ID.'
+      'GitHub Client ID is required. Please enter it in the Copilot settings input or set GITHUB_CLIENT_ID / VITE_GITHUB_CLIENT_ID in .env.'
     )
   }
 
@@ -265,14 +267,11 @@ export function createGitHubCopilotOAuth(): GitHubCopilotOAuth {
     scope: 'read:user read:org'
   }
   if (is.dev) {
-    console.log('Final OAuth config:', {
-      clientId:
-        config.clientId.substring(0, 4) +
-        '****' +
-        config.clientId.substring(config.clientId.length - 4),
+    logger.info('Final OAuth config:', {
+      clientIdConfigured: !!config.clientId,
       redirectUri: config.redirectUri,
       scope: config.scope,
-      clientSecretLength: config.clientSecret.length
+      clientSecretConfigured: !!config.clientSecret
     })
   }
 

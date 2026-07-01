@@ -138,6 +138,15 @@ export class MessagesTable extends BaseTable {
     }
   }
 
+  async updateParentId(messageId: string, parentId: string): Promise<void> {
+    const updateStmt = this.db.prepare(`
+      UPDATE messages
+      SET parent_id = ?
+      WHERE msg_id = ?
+    `)
+    updateStmt.run(parentId, messageId)
+  }
+
   async delete(messageId: string): Promise<void> {
     const deleteStmt = this.db.prepare('DELETE FROM messages WHERE msg_id = ?')
     deleteStmt.run(messageId)
@@ -175,6 +184,32 @@ export class MessagesTable extends BaseTable {
       `
       )
       .get(messageId) as SQLITE_MESSAGE | null
+  }
+
+  async getByIds(messageIds: string[]): Promise<SQLITE_MESSAGE[]> {
+    if (messageIds.length === 0) return []
+    const placeholders = messageIds.map(() => '?').join(',')
+    return this.db
+      .prepare(
+        `
+        SELECT
+          msg_id as id,
+          conversation_id,
+          parent_id,
+          content,
+          role,
+          created_at,
+          order_seq,
+          token_count,
+          status,
+          metadata,
+          is_context_edge,
+          is_variant
+        FROM messages
+        WHERE msg_id IN (${placeholders})
+      `
+      )
+      .all(...messageIds) as SQLITE_MESSAGE[]
   }
 
   async getVariants(messageId: string): Promise<SQLITE_MESSAGE[]> {
@@ -235,6 +270,32 @@ export class MessagesTable extends BaseTable {
       .get(conversationId) as SQLITE_MESSAGE | null
   }
 
+  async getLastAssistantMessage(conversationId: string): Promise<SQLITE_MESSAGE | null> {
+    return this.db
+      .prepare(
+        `
+        SELECT
+          msg_id as id,
+          conversation_id,
+          parent_id,
+          content,
+          role,
+          created_at,
+          order_seq,
+          token_count,
+          status,
+          metadata,
+          is_context_edge,
+          is_variant
+        FROM messages
+        WHERE conversation_id = ? AND role = 'assistant' AND is_variant = 0
+        ORDER BY created_at DESC, order_seq DESC
+        LIMIT 1
+      `
+      )
+      .get(conversationId) as SQLITE_MESSAGE | null
+  }
+
   async getMainMessageByParentId(
     conversationId: string,
     parentId: string
@@ -258,8 +319,9 @@ export class MessagesTable extends BaseTable {
         FROM messages
         WHERE conversation_id = ?
         AND parent_id = ?
+        AND role = 'assistant'
         AND is_variant = 0
-        ORDER BY created_at ASC
+        ORDER BY created_at DESC
         LIMIT 1
       `
       )
@@ -357,5 +419,20 @@ export class MessagesTable extends BaseTable {
       }
       return msg
     })
+  }
+
+  async queryIds(conversationId: string): Promise<string[]> {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          msg_id as id
+        FROM messages
+        WHERE conversation_id = ? AND is_variant != 1
+        ORDER BY created_at ASC, order_seq ASC
+      `
+      )
+      .all(conversationId) as Array<{ id: string }>
+    return rows.map((row) => row.id)
   }
 }

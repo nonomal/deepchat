@@ -1,10 +1,15 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type CallToolRequest
+} from '@modelcontextprotocol/sdk/types.js'
+import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { z } from 'zod'
-import { zodToJsonSchema } from 'zod-to-json-schema'
+import { toDeepChatJsonSchema } from '@shared/lib/zodJsonSchema'
 import { presenter } from '@/presenter'
 import { Prompt } from '@shared/presenter'
+import { isSafeRegexPattern } from '@shared/regexValidator'
 
 // --- 类型定义和 Schema (合并后) ---
 
@@ -42,8 +47,8 @@ const FillTemplateArgsSchema = z.object({
 })
 
 // Zod Schema 转换为 JSON Schema
-const GetTemplateParametersArgsJsonSchema = zodToJsonSchema(GetTemplateParametersArgsSchema)
-const FillTemplateArgsJsonSchema = zodToJsonSchema(FillTemplateArgsSchema)
+const GetTemplateParametersArgsJsonSchema = toDeepChatJsonSchema(GetTemplateParametersArgsSchema)
+const FillTemplateArgsJsonSchema = toDeepChatJsonSchema(FillTemplateArgsSchema)
 
 // --- MCP Server 实现 ---
 export class AutoPromptingServer {
@@ -106,24 +111,36 @@ export class AutoPromptingServer {
         {
           name: 'list_all_prompt_template_names',
           description: '获取所有可用提示词模板的名称列表。',
-          inputSchema: zodToJsonSchema(z.object({})) // 无需参数
+          inputSchema: toDeepChatJsonSchema(z.object({})), // 无需参数
+          annotations: {
+            title: 'List Prompt Template Names',
+            readOnlyHint: true
+          }
         },
         {
           name: 'get_prompt_template_parameters',
           description: '根据提示词模板名称获取其所需的参数列表和描述。',
-          inputSchema: GetTemplateParametersArgsJsonSchema
+          inputSchema: GetTemplateParametersArgsJsonSchema,
+          annotations: {
+            title: 'Get Template Parameters',
+            readOnlyHint: true
+          }
         },
         {
           name: 'fill_prompt_template',
           description: '根据提示词模板名称和参数，填充模板内容并生成最终的Prompt。',
-          inputSchema: FillTemplateArgsJsonSchema
+          inputSchema: FillTemplateArgsJsonSchema,
+          annotations: {
+            title: 'Fill Prompt Template',
+            readOnlyHint: true
+          }
         }
       ]
     }
   }
 
   // 处理工具调用 (对应 CallToolRequestSchema)
-  private async handleToolCall(request: z.infer<typeof CallToolRequestSchema>) {
+  private async handleToolCall(request: CallToolRequest) {
     const { name, arguments: args } = request.params
 
     if (name === 'list_all_prompt_template_names') {
@@ -143,7 +160,7 @@ export class AutoPromptingServer {
       const parsed = GetTemplateParametersArgsSchema.safeParse(args)
       if (!parsed.success) {
         throw new Error(
-          `Invalid parameters for get_prompt_template_parameters: ${parsed.error.errors.map((e) => e.message).join(', ')}`
+          `Invalid parameters for get_prompt_template_parameters: ${parsed.error.issues.map((e) => e.message).join(', ')}`
         )
       }
 
@@ -163,7 +180,7 @@ export class AutoPromptingServer {
       const parsed = FillTemplateArgsSchema.safeParse(args)
       if (!parsed.success) {
         throw new Error(
-          `Invalid parameters for fill_prompt_template: ${parsed.error.errors.map((e) => e.message).join(', ')}`
+          `Invalid parameters for fill_prompt_template: ${parsed.error.issues.map((e) => e.message).join(', ')}`
         )
       }
 
@@ -180,7 +197,16 @@ export class AutoPromptingServer {
       if (templateArgs && template.parameters) {
         for (const param of template.parameters) {
           const value = templateArgs[param.name] || ''
-          filledContent = filledContent.replace(new RegExp(`{{${param.name}}}`, 'g'), value)
+          // Validate regex pattern for ReDoS safety
+          // Escape special characters in param.name to create a safe pattern
+          const escapedParamName = param.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const pattern = `{{${escapedParamName}}}`
+          if (!isSafeRegexPattern(pattern)) {
+            throw new Error(
+              `Template parameter name "${param.name}" creates an unsafe regex pattern. Please use a simpler parameter name.`
+            )
+          }
+          filledContent = filledContent.replace(new RegExp(pattern, 'g'), value)
         }
       }
 

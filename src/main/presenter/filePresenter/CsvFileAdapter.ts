@@ -16,11 +16,12 @@ export class CsvFileAdapter extends BaseFileAdapter {
     return 'CSV File'
   }
 
-  private parseCsvContent(content: string): string[][] {
+  private parseDelimitedContent(content: string): string[][] {
+    const delimiter = path.extname(this.filePath).toLowerCase() === '.tsv' ? '\t' : ','
     const rows = content
       .split('\n')
-      .map((row) => row.split(',').map((cell) => cell.trim().replace(/^["'](.*)["']$/, '$1')))
-    return rows.filter((row) => row.length > 0 && row.some((cell) => cell.length > 0))
+      .map((row) => row.split(delimiter).map((cell) => cell.trim().replace(/^["'](.*)["']$/, '$1')))
+    return rows.filter((row) => row.some((cell) => cell.length > 0))
   }
 
   private generateTableMarkdown(rows: string[][]): string {
@@ -29,11 +30,11 @@ export class CsvFileAdapter extends BaseFileAdapter {
     const headers = rows[0]
     const data = rows.slice(1)
 
-    // 生成表头
+    // Generate table headers
     let markdown = '| ' + headers.join(' | ') + ' |\n'
     markdown += '| ' + headers.map(() => '---').join(' | ') + ' |\n'
 
-    // 生成数据行
+    // Generate data rows
     data.forEach((row) => {
       markdown += '| ' + row.map((cell) => cell || '').join(' | ') + ' |\n'
     })
@@ -47,7 +48,7 @@ export class CsvFileAdapter extends BaseFileAdapter {
 
     if (!content) return undefined
 
-    const csvRows = this.parseCsvContent(content)
+    const csvRows = this.parseDelimitedContent(content)
     const headers = csvRows[0] || []
 
     const fileDescription = `

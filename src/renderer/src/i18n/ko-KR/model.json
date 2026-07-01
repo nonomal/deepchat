@@ -6,7 +6,7 @@
     "loadFailed": "모델 로드 실패"
   },
   "type": {
-    "custom": "커스텀 모델",
+    "custom": "사용자 정의 모델",
     "official": "공식 모델"
   },
   "add": {
@@ -19,6 +19,30 @@
     "add": "모델 추가",
     "enableAll": "모두 활성화",
     "disableAll": "모두 비활성화"
+  },
+  "sort": {
+    "status": "상태별",
+    "name": "이름별"
+  },
+  "filter": {
+    "label": "필터",
+    "clearAll": "필터 지우기",
+    "visibleCount": "{visible} / {total} 표시 중",
+    "capabilities": "기능",
+    "types": "유형",
+    "capabilityOptions": {
+      "vision": "비전",
+      "functionCall": "함수 호출",
+      "reasoning": "추론",
+      "search": "웹 검색"
+    },
+    "typeOptions": {
+      "chat": "채팅",
+      "embedding": "임베딩",
+      "rerank": "재순위",
+      "imageGeneration": "이미지 생성",
+      "videoGeneration": "비디오 생성"
+    }
   },
   "tags": {
     "reasoning": "추론",

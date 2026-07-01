@@ -10,13 +10,16 @@
     "composite": true,
     "resolveJsonModule": false,
     "types": ["electron-vite/node"],
-    "baseUrl": ".",
+    "moduleResolution": "bundler",
     "paths": {
+      "*": [
+        "./*"
+      ],
       "@/*": [
-        "src/main/*"
+        "./src/main/*"
       ],
       "@shared/*": [
-        "src/shared/*"
+        "./src/shared/*"
       ]
     }
   }

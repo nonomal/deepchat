@@ -1,166 +1,142 @@
 <template>
-  <div class="w-full h-full flex-row flex">
+  <div class="relative flex h-full min-h-0 w-full flex-row overflow-hidden">
     <div
-      :class="[
-        'flex-1 w-0 h-full transition-all duration-200 max-lg:!mr-0',
-        artifactStore.isOpen && route.name === 'chat' ? 'mr-[calc(60%_-_104px)]' : ''
-      ]"
+      class="relative flex h-full min-h-0 min-w-0 w-0 flex-1 transition-[width] duration-200 ease-out"
     >
-      <div class="flex h-full">
-        <!-- 会话列表 (根据语言方向自适应位置) -->
-        <Transition
-          enter-active-class="transition-all duration-300 ease-out"
-          leave-active-class="transition-all duration-300 ease-in"
-          :enter-from-class="
-            langStore.dir === 'rtl' ? 'translate-x-full opacity-0' : '-translate-x-full opacity-0'
-          "
-          :leave-to-class="
-            langStore.dir === 'rtl' ? 'translate-x-full opacity-0' : '-translate-x-full opacity-0'
-          "
-        >
-          <div
-            v-show="chatStore.isSidebarOpen"
-            :class="[
-              'w-60 max-w-60 h-full fixed z-20 lg:relative',
-              langStore.dir === 'rtl' ? 'right-0' : 'left-0'
-            ]"
-            :dir="langStore.dir"
-          >
-            <ThreadsView class="transform" />
-          </div>
-        </Transition>
-
-        <!-- 主聊天区域 -->
-        <div class="flex-1 flex flex-col w-0">
-          <!-- 新会话 -->
-          <NewThread v-if="!chatStore.getActiveThreadId()" />
-          <template v-else>
-            <!-- 标题栏 -->
-            <TitleView :model="activeModel" />
-
-            <!-- 聊天内容区域 -->
-            <ChatView />
-          </template>
-        </div>
-      </div>
+      <template v-if="isReady">
+        <AgentWelcomePage
+          v-if="pageRouter.currentRoute === 'newThread' && agentStore.selectedAgentId === null"
+        />
+        <NewThreadPage v-else-if="pageRouter.currentRoute === 'newThread'" />
+        <ChatPage
+          v-else-if="pageRouter.currentRoute === 'chat' && pageRouter.chatSessionId"
+          :session-id="pageRouter.chatSessionId"
+        />
+      </template>
     </div>
-    <!-- Artifacts 预览区域 -->
-    <ArtifactDialog />
+
+    <ChatSidePanel
+      :session-id="pageRouter.currentRoute === 'chat' ? pageRouter.chatSessionId : null"
+      :workspace-path="sessionStore.activeSession?.projectDir ?? null"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent } from 'vue'
-import { useChatStore } from '@/stores/chat'
-import { computed, watch } from 'vue'
-import { useSettingsStore } from '@/stores/settings'
-import { RENDERER_MODEL_META } from '@shared/presenter'
-import { useArtifactStore } from '@/stores/artifact'
-import ArtifactDialog from '@/components/artifacts/ArtifactDialog.vue'
-import { useRoute } from 'vue-router'
-import { useTitle } from '@vueuse/core'
-import { useLanguageStore } from '@/stores/language'
-const ThreadsView = defineAsyncComponent(() => import('@/components/ThreadsView.vue'))
-const TitleView = defineAsyncComponent(() => import('@/components/TitleView.vue'))
-const ChatView = defineAsyncComponent(() => import('@/components/ChatView.vue'))
-const NewThread = defineAsyncComponent(() => import('@/components/NewThread.vue'))
-const artifactStore = useArtifactStore()
-const settingsStore = useSettingsStore()
-const route = useRoute()
-const chatStore = useChatStore()
-const title = useTitle()
-const langStore = useLanguageStore()
-// 添加标题更新逻辑
-const updateTitle = () => {
-  const activeThread = chatStore.activeThread
-  if (activeThread) {
-    title.value = activeThread.title
-  } else {
-    title.value = 'New Chat'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { createStartupClient } from '@api/StartupClient'
+import ChatSidePanel from '@/components/sidepanel/ChatSidePanel.vue'
+import NewThreadPage from '@/pages/NewThreadPage.vue'
+import ChatPage from '@/pages/ChatPage.vue'
+import AgentWelcomePage from '@/pages/AgentWelcomePage.vue'
+import { usePageRouterStore } from '@/stores/ui/pageRouter'
+import { useSessionStore } from '@/stores/ui/session'
+import { useAgentStore } from '@/stores/ui/agent'
+import { useProjectStore } from '@/stores/ui/project'
+import { useModelStore } from '@/stores/modelStore'
+import { useOllamaStore } from '@/stores/ollamaStore'
+import { useStartupWorkloadStore } from '@/stores/startupWorkloadStore'
+import { markStartupInteractive, scheduleStartupDeferredTask } from '@/lib/startupDeferred'
+
+const pageRouter = usePageRouterStore()
+const sessionStore = useSessionStore()
+const agentStore = useAgentStore()
+const projectStore = useProjectStore()
+const modelStore = useModelStore()
+const ollamaStore = useOllamaStore()
+let startupWorkloadStore: ReturnType<typeof useStartupWorkloadStore> | null = null
+
+try {
+  startupWorkloadStore = useStartupWorkloadStore()
+} catch (error) {
+  console.warn('[Startup][Renderer] startupWorkloadStore unavailable in ChatTabView', error)
+}
+const isReady = ref(false)
+let cancelDeferredHydration: (() => void) | null = null
+
+const initializeRouteFromFallbackState = async () => {
+  if (sessionStore.error) {
+    await pageRouter.initialize()
+    return
   }
+
+  await pageRouter.initialize({
+    activeSessionId: sessionStore.activeSessionId ?? null
+  })
 }
 
-// 监听活动会话变化
-watch(
-  () => chatStore.activeThread,
-  () => {
-    updateTitle()
-  },
-  { immediate: true }
-)
+onMounted(async () => {
+  startupWorkloadStore?.connect()
+  console.info('[Startup][Renderer] ChatTabView critical hydration begin')
+  let criticalLoadPromises: Promise<void> | null = null
 
-// 监听会话标题变化
-watch(
-  () => chatStore.threads,
-  () => {
-    if (chatStore.activeThread) {
-      updateTitle()
+  try {
+    const startupClient = createStartupClient()
+    const bootstrap = await startupClient.getBootstrap()
+    console.info(
+      `[Startup][Renderer] startup.bootstrap.ready run=${bootstrap.startupRunId} agents=${bootstrap.agents.length} activeSession=${bootstrap.activeSessionId ?? 'none'}`
+    )
+
+    await sessionStore.applyBootstrapShell({
+      activeSessionId: bootstrap.activeSessionId,
+      activeSession: bootstrap.activeSession ?? null
+    })
+    agentStore.applyBootstrapAgents(bootstrap.agents)
+    projectStore.applyBootstrapDefaultProjectPath(
+      bootstrap.defaultProjectPath,
+      bootstrap.defaultChatWorkspacePath ?? null
+    )
+
+    await pageRouter.initialize({
+      activeSessionId: bootstrap.activeSessionId
+    })
+
+    // Start loading agents, projects, models, and ollama immediately after router init
+    // Don't block on them, they load in background while we mark interactive
+    criticalLoadPromises = Promise.allSettled([
+      agentStore.fetchAgents(),
+      projectStore.fetchProjects(),
+      modelStore.initialize(),
+      ollamaStore.initialize()
+    ]).then(() => {
+      console.info('[Startup][Renderer] ChatTabView critical loads complete')
+    })
+  } catch (error) {
+    console.warn('[Startup][Renderer] ChatTabView critical hydration failed:', error)
+    await Promise.allSettled([agentStore.fetchAgents(), projectStore.loadDefaultProjectPath()])
+    await initializeRouteFromFallbackState()
+  } finally {
+    isReady.value = true
+    console.info('[Startup][Renderer] ChatTabView interactive ready')
+
+    // Session data is already loading in parallel from App.vue.onMounted
+    // Don't block on it here - let it load in background
+    if (!sessionStore.hasLoadedInitialPage) {
+      void sessionStore.fetchSessions()
     }
-  },
-  { deep: true }
-)
 
-const activeModel = computed(() => {
-  let model: RENDERER_MODEL_META | undefined
-  const modelId = chatStore.activeThread?.settings.modelId
-  const providerId = chatStore.activeThread?.settings.providerId
-
-  if (modelId && providerId) {
-    // 首先在启用的模型中查找，同时匹配 modelId 和 providerId
-    for (const group of settingsStore.enabledModels) {
-      if (group.providerId === providerId) {
-        const foundModel = group.models.find((m) => m.id === modelId)
-        if (foundModel) {
-          model = foundModel
-          break
-        }
+    markStartupInteractive()
+    cancelDeferredHydration = scheduleStartupDeferredTask(async () => {
+      console.info('[Startup][Renderer] ChatTabView deferred hydration begin')
+      // Wait for critical loads if they're still running
+      if (criticalLoadPromises) {
+        await criticalLoadPromises
       }
-    }
-
-    // 如果在启用的模型中没找到，再在自定义模型中查找
-    if (!model) {
-      for (const group of settingsStore.customModels) {
-        if (group.providerId === providerId) {
-          const foundModel = group.models.find((m) => m.id === modelId)
-          if (foundModel) {
-            model = foundModel
-            break
-          }
-        }
-      }
-    }
+      console.info('[Startup][Renderer] ChatTabView deferred hydration complete')
+    })
   }
+})
 
-  if (!model) {
-    model = {
-      name: chatStore.activeThread?.settings.modelId || '',
-      id: chatStore.activeThread?.settings.modelId || '',
-      group: '',
-      providerId: chatStore.activeThread?.settings.providerId || '',
-      enabled: false,
-      isCustom: false,
-      contextLength: 0,
-      maxTokens: 0
-    }
-  }
-  return {
-    name: model.name,
-    id: model.id,
-    providerId: model.providerId,
-    tags: []
+onBeforeUnmount(() => {
+  if (cancelDeferredHydration) {
+    cancelDeferredHydration()
+    cancelDeferredHydration = null
   }
 })
 </script>
 
 <style>
-.bg-grid-pattern {
-  background-image:
-    linear-gradient(to right, #000 1px, transparent 1px),
-    linear-gradient(to bottom, #000 1px, transparent 1px);
-  background-size: 20px 20px;
-}
-
-/* 添加全局样式 */
+/* Scrollbar styles */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

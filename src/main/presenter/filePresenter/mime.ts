@@ -8,11 +8,11 @@ import { DocFileAdapter } from './DocFileAdapter'
 import { PptFileAdapter } from './PptFileAdapter'
 import { CodeFileAdapter } from './CodeFileAdapter'
 import { AudioFileAdapter } from './AudioFileAdapter'
+import { OpenDocumentFileAdapter } from './OpenDocumentFileAdapter'
+import { RtfFileAdapter } from './RtfFileAdapter'
 import { UnsupportFileAdapter } from './UnsupportFileAdapter'
-import { fileTypeFromFile } from 'file-type'
-import fs from 'fs/promises'
-import path from 'path'
-import * as mime from 'mime-types'
+
+export { detectMimeType, isLikelyTextFile } from './mimeDetection'
 
 export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => {
   const map = new Map<string, FileAdapterConstructor>()
@@ -20,10 +20,15 @@ export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => 
   // Text formats
   map.set('text/plain', TextFileAdapter)
   map.set('text/csv', CsvFileAdapter)
+  map.set('text/tab-separated-values', CsvFileAdapter)
   map.set('text/markdown', TextFileAdapter)
   map.set('application/json', TextFileAdapter)
   map.set('application/x-yaml', TextFileAdapter)
+  map.set('application/yaml', TextFileAdapter)
+  map.set('text/yaml', TextFileAdapter)
   map.set('application/xml', TextFileAdapter)
+  map.set('application/rtf', RtfFileAdapter)
+  map.set('text/rtf', RtfFileAdapter)
   map.set('text/*', TextFileAdapter)
 
   // Audio formats
@@ -68,8 +73,16 @@ export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => 
   // Excel formats
   map.set('application/vnd.ms-excel', ExcelFileAdapter)
   map.set('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.sheet.macroenabled.12', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.sheet.macroEnabled.12', ExcelFileAdapter)
+  map.set('application/vnd.openxmlformats-officedocument.spreadsheetml.template', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.template.macroenabled.12', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.template.macroEnabled.12', ExcelFileAdapter)
   map.set('application/vnd.oasis.opendocument.spreadsheet', ExcelFileAdapter)
   map.set('application/vnd.ms-excel.sheet.binary.macroEnabled.12', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.sheet.binary.macroenabled.12', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.addin.macroenabled.12', ExcelFileAdapter)
+  map.set('application/vnd.ms-excel.addin.macroEnabled.12', ExcelFileAdapter)
   map.set('application/vnd.apple.numbers', ExcelFileAdapter)
 
   // Image formats
@@ -79,6 +92,10 @@ export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => 
   map.set('image/gif', ImageFileAdapter)
   map.set('image/webp', ImageFileAdapter)
   map.set('image/bmp', ImageFileAdapter)
+  map.set('image/svg+xml', ImageFileAdapter)
+  map.set('image/heic', ImageFileAdapter)
+  map.set('image/heif', ImageFileAdapter)
+  map.set('image/tiff', ImageFileAdapter)
   map.set('image/*', ImageFileAdapter)
 
   // PDF format
@@ -87,6 +104,12 @@ export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => 
   // Word document formats
   map.set('application/msword', DocFileAdapter)
   map.set('application/vnd.openxmlformats-officedocument.wordprocessingml.document', DocFileAdapter)
+  map.set('application/vnd.ms-word.document.macroenabled.12', DocFileAdapter)
+  map.set('application/vnd.ms-word.document.macroEnabled.12', DocFileAdapter)
+  map.set('application/vnd.openxmlformats-officedocument.wordprocessingml.template', DocFileAdapter)
+  map.set('application/vnd.ms-word.template.macroenabled.12', DocFileAdapter)
+  map.set('application/vnd.ms-word.template.macroEnabled.12', DocFileAdapter)
+  map.set('application/vnd.oasis.opendocument.text', OpenDocumentFileAdapter)
 
   // PowerPoint formats
   map.set('application/vnd.ms-powerpoint', PptFileAdapter)
@@ -94,6 +117,15 @@ export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => 
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     PptFileAdapter
   )
+  map.set('application/vnd.ms-powerpoint.presentation.macroenabled.12', PptFileAdapter)
+  map.set('application/vnd.ms-powerpoint.presentation.macroEnabled.12', PptFileAdapter)
+  map.set('application/vnd.openxmlformats-officedocument.presentationml.slideshow', PptFileAdapter)
+  map.set('application/vnd.ms-powerpoint.slideshow.macroenabled.12', PptFileAdapter)
+  map.set('application/vnd.ms-powerpoint.slideshow.macroEnabled.12', PptFileAdapter)
+  map.set('application/vnd.openxmlformats-officedocument.presentationml.template', PptFileAdapter)
+  map.set('application/vnd.ms-powerpoint.template.macroenabled.12', PptFileAdapter)
+  map.set('application/vnd.ms-powerpoint.template.macroEnabled.12', PptFileAdapter)
+  map.set('application/vnd.oasis.opendocument.presentation', OpenDocumentFileAdapter)
 
   // Additional C/C++ formats
   map.set('text/x-c-header', CodeFileAdapter)
@@ -101,133 +133,9 @@ export const getMimeTypeAdapterMap = (): Map<string, FileAdapterConstructor> => 
   map.set('text/x-h', CodeFileAdapter)
   map.set('text/x-hpp', CodeFileAdapter)
 
-  // 其他格式
+  // Other formats
   map.set('*/*', UnsupportFileAdapter)
   map.set('', UnsupportFileAdapter)
 
   return map
-}
-
-export const detectMimeType = async (filePath: string): Promise<string> => {
-  try {
-    // 1. Try file-type for binary detection
-    const fileTypeResult = await fileTypeFromFile(filePath)
-    console.log(
-      `[getMimeType] fileTypeFromFile result for ${path.basename(filePath)}:`,
-      fileTypeResult
-    )
-    if (fileTypeResult) {
-      // Special case: Correct potential misidentification for .ts/.tsx
-      // file-type might identify them based on magic numbers if they exist,
-      // but mime.lookup is often better for these based on extension.
-      // Let's prioritize mime.lookup for .ts/.tsx specifically.
-      const ext = path.extname(filePath).toLowerCase()
-      if (ext === '.ts' || ext === '.tsx') {
-        const mimeTypeFromExt = mime.lookup(filePath)
-        if (mimeTypeFromExt === 'application/typescript') {
-          console.log('Prioritizing mime.lookup for .ts/.tsx:', mimeTypeFromExt)
-          return mimeTypeFromExt
-        }
-      }
-
-      console.log('Detected by file-type:', fileTypeResult.mime)
-      return fileTypeResult.mime
-    }
-
-    // 2. Fallback to mime.lookup for extension-based detection
-    const mimeType = mime.lookup(filePath)
-    console.log(`[getMimeType] mime.lookup result for ${path.basename(filePath)}:`, mimeType)
-    if (mimeType) {
-      console.log('Detected by mime.lookup:', mimeType)
-      return mimeType
-    }
-
-    // 3. If neither works, try the text heuristic
-    console.log(`[getMimeType] Trying text heuristic for ${path.basename(filePath)}`)
-    const isText = await isLikelyTextFile(filePath)
-    console.log(`[getMimeType] isLikelyTextFile result for ${path.basename(filePath)}: ${isText}`)
-    return isText ? 'text/plain' : 'application/octet-stream'
-  } catch (error) {
-    console.error(`[getMimeType] Error before text check for ${path.basename(filePath)}:`, error)
-    // If file-type or mime.lookup caused an error, still try basic text check
-    // or fall back to octet-stream directly depending on desired robustness.
-    // For now, let's try the text check even on error.
-    try {
-      console.log(`[getMimeType] Trying text heuristic for ${path.basename(filePath)} after error`)
-      const isText = await isLikelyTextFile(filePath)
-      console.log(
-        `[getMimeType] isLikelyTextFile result for ${path.basename(filePath)} after error: ${isText}`
-      )
-      return isText ? 'text/plain' : 'application/octet-stream'
-    } catch (textCheckError) {
-      console.error(`Error during text check for ${filePath}:`, textCheckError)
-      return 'application/octet-stream' // Final fallback on error
-    }
-  }
-}
-
-// Helper function to check if a file is likely text-based
-export const isLikelyTextFile = async (filePath: string, bytesToRead = 1024): Promise<boolean> => {
-  let fileHandle: fs.FileHandle | undefined
-  const baseName = path.basename(filePath)
-  console.log(`[isLikelyTextFile] Checking ${baseName}...`)
-  try {
-    fileHandle = await fs.open(filePath, 'r')
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, 0)
-    await fileHandle.close() // Close the file handle promptly
-    console.log(`[isLikelyTextFile] Read ${bytesRead} bytes from ${baseName}.`)
-
-    if (bytesRead === 0) {
-      // Empty file, could be considered text or not, default to not-text
-      console.log(`[isLikelyTextFile] ${baseName} is empty.`)
-      return false
-    }
-
-    const content = buffer.slice(0, bytesRead)
-
-    // Heuristic: Check for null bytes - common in binary, rare in text
-    const hasNullByte = content.includes(0)
-    console.log(`[isLikelyTextFile] ${baseName} contains null byte: ${hasNullByte}`)
-    if (hasNullByte) {
-      // Found null byte, likely binary
-      return false
-    }
-
-    // Heuristic: Check if most characters are printable ASCII or valid UTF-8
-    // A more robust check would involve full UTF-8 validation, but this is simpler
-    let nonTextChars = 0
-    for (let i = 0; i < content.length; i++) {
-      const byte = content[i]
-      // Allow printable ASCII (32-126), tab (9), newline (10), carriage return (13)
-      // Also crude check for potential multi-byte UTF-8 start bytes (>=128)
-      if (
-        !((byte >= 32 && byte <= 126) || byte === 9 || byte === 10 || byte === 13 || byte >= 128)
-      ) {
-        nonTextChars++
-      }
-    }
-
-    const nonTextRatio = bytesRead > 0 ? nonTextChars / bytesRead : 0
-    console.log(
-      `[isLikelyTextFile] ${baseName} non-text char count: ${nonTextChars}, ratio: ${nonTextRatio.toFixed(3)}`
-    )
-
-    // If more than, say, 10% of characters are suspicious control characters (excluding tab/newline/cr)
-    // it's more likely binary.
-    if (nonTextRatio > 0.1) {
-      console.log(`[isLikelyTextFile] ${baseName} determined as BINARY due to high non-text ratio.`)
-      return false
-    }
-
-    // If it passes the checks, assume it's likely text
-    console.log(`[isLikelyTextFile] ${baseName} determined as TEXT.`)
-    return true
-  } catch (error) {
-    console.error(`[isLikelyTextFile] Failed to read file ${baseName} for text check:`, error)
-    if (fileHandle) {
-      await fileHandle.close() // Ensure closure even on error
-    }
-    return false // Default to not-text on error
-  }
 }

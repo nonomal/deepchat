@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as crypto from 'crypto'
 import { FileMetaData } from '@shared/presenter'
 import path from 'path'
-import { detectMimeType } from './mime'
+import { detectMimeType } from './mimeDetection'
 
 export abstract class BaseFileAdapter {
   filePath: string
@@ -68,7 +68,7 @@ export abstract class BaseFileAdapter {
   }
 
   protected abstract getFileDescription(): string | undefined
-  protected abstract getContent(): Promise<string | undefined>
+  public abstract getContent(): Promise<string | undefined>
   public abstract getLLMContent(): Promise<string | undefined>
   public abstract getThumbnail(): Promise<string | undefined>
 }

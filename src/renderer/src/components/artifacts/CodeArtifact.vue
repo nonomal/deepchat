@@ -42,11 +42,12 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useThrottleFn } from '@vueuse/core'
 import { Icon } from '@iconify/vue'
-import { MermaidBlockNode } from 'vue-renderer-markdown'
-import { useThemeStore } from '@/stores/theme'
+import { MermaidBlockNode } from 'markstream-vue'
+import { createDeviceClient } from '@api/DeviceClient'
 import { useArtifactStore } from '@/stores/artifact'
-import { getLanguageIcon } from 'vue-renderer-markdown'
-import { detectLanguage, useMonaco } from 'vue-use-monaco'
+import { useUiSettingsStore } from '@/stores/uiSettingsStore'
+import { getLanguageIcon } from 'markstream-vue'
+import { detectLanguage, useMonaco } from 'stream-monaco'
 import { nanoid } from 'nanoid'
 
 const props = defineProps<{
@@ -64,18 +65,46 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
-const { createEditor, updateCode } = useMonaco()
-const themeStore = useThemeStore()
+const deviceClient = createDeviceClient()
+const uiSettingsStore = useUiSettingsStore()
+const { createEditor, updateCode, getEditorView } = useMonaco({
+  wordWrap: 'on',
+  wrappingIndent: 'same',
+  fontFamily: uiSettingsStore.formattedCodeFontFamily
+})
 const artifactStore = useArtifactStore()
 const copyText = ref(t('common.copy'))
 const codeEditor = ref<HTMLElement>()
-const codeLanguage = ref(props.block.artifact?.language?.trim().toLowerCase() || '')
+
+const sanitizeLanguage = (language?: string | null) => {
+  if (!language) return ''
+  const normalized = language.trim().toLowerCase()
+
+  switch (normalized) {
+    case 'md':
+      return 'markdown'
+    case 'plain':
+    case 'text':
+      return 'plaintext'
+    case 'htm':
+      return 'html'
+    default:
+      return normalized
+  }
+}
+
+const codeLanguage = ref(sanitizeLanguage(props.block.artifact?.language))
+const applyFontFamily = (fontFamily: string) => {
+  const editor = getEditorView()
+  if (editor) {
+    editor.updateOptions({ fontFamily })
+  }
+}
 
 // 创建节流版本的语言检测函数，1秒内最多执行一次
 const throttledDetectLanguage = useThrottleFn(
   (code: string) => {
-    codeLanguage.value = detectLanguage(code)
-    console.log('Detected language:', codeLanguage.value)
+    codeLanguage.value = sanitizeLanguage(detectLanguage(code))
   },
   1000,
   true
@@ -151,11 +180,7 @@ const displayLanguage = computed(() => {
 
 const handleCopy = async () => {
   try {
-    if (window.api?.copyText) {
-      window.api.copyText(props.block.content)
-    } else {
-      await navigator.clipboard.writeText(props.block.content)
-    }
+    deviceClient.copyText(props.block.content)
     copyText.value = t('common.copySuccess')
     setTimeout(() => {
       copyText.value = t('common.copy')
@@ -186,17 +211,10 @@ const previewCode = () => {
       status: 'loaded'
     },
     props.messageId,
-    props.threadId
+    props.threadId,
+    { force: true }
   )
 }
-
-// 监听主题变化
-watch(
-  () => themeStore.isDark,
-  () => {
-    updateCode(props.block.content, codeLanguage.value)
-  }
-)
 
 // 监听代码变化
 watch(
@@ -223,7 +241,7 @@ watch(
 watch(
   () => props.block.artifact?.language,
   (newLanguage) => {
-    const normalizedLang = newLanguage?.trim().toLowerCase() || ''
+    const normalizedLang = sanitizeLanguage(newLanguage)
     if (normalizedLang === '') {
       throttledDetectLanguage(props.block.content)
     } else {
@@ -246,18 +264,19 @@ watch(
 onMounted(() => {
   if (!codeEditor.value) return
   createEditor(codeEditor.value, props.block.content, codeLanguage.value)
+  applyFontFamily(uiSettingsStore.formattedCodeFontFamily)
 })
+
+watch(
+  () => uiSettingsStore.formattedCodeFontFamily,
+  (font) => {
+    applyFontFamily(font)
+  }
+)
 </script>
 <style>
 /* Ensure CodeMirror inherits the right font in the editor */
 .cm-editor .cm-content {
-  font-family:
-    ui-monospace,
-    SFMono-Regular,
-    SF Mono,
-    Menlo,
-    Consolas,
-    Liberation Mono,
-    monospace !important;
+  font-family: var(--dc-code-font-family) !important;
 }
 </style>

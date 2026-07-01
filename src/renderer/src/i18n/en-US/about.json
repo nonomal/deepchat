@@ -11,6 +11,13 @@
     "osVersion": "System Version"
   },
   "disclaimerButton": "Disclaimer",
+  "feedbackButton": "Feedback",
   "disclaimerTitle": "Terms of Use Statement",
-  "checkUpdateButton": "Check for Updates"
+  "checkUpdateButton": "Check for Updates",
+  "mockUpdateButton": "Mock Downloaded Update",
+  "clearMockUpdateButton": "Clear Mock Update",
+  "mockOnboardingButton": "Mock First-Run Guide",
+  "updateChannel": "Update Channel",
+  "stableChannel": "Stable",
+  "betaChannel": "Beta"
 }

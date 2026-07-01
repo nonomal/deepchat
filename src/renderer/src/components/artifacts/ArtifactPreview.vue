@@ -5,19 +5,17 @@
       @click="handleClick"
     >
       <div
-        class="flex-shrink-0 w-14 h-14 rounded-lg rounded-r-none inline-flex flex-row justify-center items-center bg-muted border-r"
+        class="shrink-0 w-14 h-14 rounded-lg rounded-r-none inline-flex flex-row justify-center items-center bg-muted border-r"
       >
         <Icon :icon="getArtifactIcon(block.artifact?.type)" class="w-5 h-5 text-muted-foreground" />
       </div>
-      <div class="flex-grow w-0">
+      <div class="grow w-0">
         <h3 class="text-sm font-medium leading-none tracking-tight truncate">
           {{ block.artifact.title || displayTitle }}
         </h3>
         <p class="text-xs text-muted-foreground mt-0.5">{{ artifactDesc }}</p>
       </div>
-      <div
-        class="flex-shrink-0 px-3 h-14 rounded-lg rounded-l-none flex justify-center items-center"
-      >
+      <div class="shrink-0 px-3 h-14 rounded-lg rounded-l-none flex justify-center items-center">
         <Icon
           v-if="props.loading"
           icon="lucide:loader-2"
@@ -32,10 +30,12 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import { useArtifactStore } from '@/stores/artifact'
+import { useSidepanelStore } from '@/stores/ui/sidepanel'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const artifactStore = useArtifactStore()
+const sidepanelStore = useSidepanelStore()
 
 // 创建一个安全的翻译函数
 const t = (() => {
@@ -304,6 +304,7 @@ const handleClick = () => {
     artifactStore.currentArtifact?.content === props.block.content
   ) {
     artifactStore.hideArtifact()
+    sidepanelStore.closePanel()
   } else {
     artifactStore.showArtifact(
       {
@@ -315,7 +316,8 @@ const handleClick = () => {
         status: 'loaded'
       },
       props.messageId,
-      props.threadId
+      props.threadId,
+      { force: true }
     )
   }
 }

@@ -1,4 +1,5 @@
 import common from './common.json'
+import image from './image.json'
 import mcp from './mcp.json'
 import settings from './settings.json'
 import about from './about.json'
@@ -10,18 +11,18 @@ import welcome from './welcome.json'
 import components from './components.json'
 import dialog from './dialog.json'
 import model from './model.json'
-import newThread from './newThread.json'
 import routes from './routes.json'
 import artifacts from './artifacts.json'
 import chat from './chat.json'
 import contextMenu from './contextMenu.json'
 import promptSetting from './promptSetting.json'
+import plan from './plan.json'
 
 const others = {
-  Silicon: 'Silicon Flow',
+  Silicon: 'SiliconFlow',
   Qiniu: 'Qiniu',
   QwenLM: 'Qwen Model',
-  Doubao: 'Doubao',
+  Doubao: 'Volcano Engine',
   PPIO: 'PPIO Cloud',
   Moonshot: 'Moonshot AI',
   DashScope: 'Alibaba Bailian',
@@ -32,6 +33,7 @@ const others = {
 
 export default {
   common,
+  image,
   mcp,
   settings,
   about,
@@ -43,11 +45,11 @@ export default {
   components,
   dialog,
   model,
-  newThread,
   routes,
   artifacts,
   chat,
   contextMenu,
   promptSetting,
+  plan,
   ...others
 }

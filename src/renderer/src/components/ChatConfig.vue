@@ -1,14 +1,33 @@
 <script setup lang="ts">
+// === Vue Core ===
+import { computed, watch, toRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { computed } from 'vue'
-import { Label } from '@/components/ui/label'
-import { Slider } from '@/components/ui/slider'
+
+// === Components ===
+import { Label } from '@shadcn/components/ui/label'
 import { Icon } from '@iconify/vue'
-import { Textarea } from '@/components/ui/textarea'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Textarea } from '@shadcn/components/ui/textarea'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger
+} from '@shadcn/components/ui/tooltip'
+import ConfigSliderField from './ChatConfig/ConfigSliderField.vue'
+import ConfigInputField from './ChatConfig/ConfigInputField.vue'
+import ConfigSelectField from './ChatConfig/ConfigSelectField.vue'
+
+// === Composables ===
+import { useModelCapabilities } from '@/composables/useModelCapabilities'
+import { useThinkingBudget } from '@/composables/useThinkingBudget'
+import { useModelTypeDetection } from '@/composables/useModelTypeDetection'
+import { useChatConfigFields } from '@/composables/useChatConfigFields'
+import type { ReasoningEffort, Verbosity } from '@shared/types/model-db'
+
+// === Stores ===
 import { useLanguageStore } from '@/stores/language'
 
-// Define props to receive config from parent
+// === Props & Emits ===
 const props = defineProps<{
   contextLengthLimit?: number
   maxTokensLimit?: number
@@ -16,41 +35,57 @@ const props = defineProps<{
   contextLength: number
   maxTokens: number
   artifacts: number
+  thinkingBudget?: number
+  modelId?: string
+  providerId?: string
+  reasoningEffort?: ReasoningEffort
+  verbosity?: Verbosity
+  modelType?: 'chat' | 'imageGeneration' | 'videoGeneration' | 'tts' | 'embedding' | 'rerank'
 }>()
 
 const systemPrompt = defineModel<string>('systemPrompt')
-// Define emits to send updates to parent
+
 const emit = defineEmits<{
   'update:temperature': [value: number]
   'update:contextLength': [value: number]
   'update:maxTokens': [value: number]
-  // 'update:artifacts': [value: 0 | 1]
+  'update:thinkingBudget': [value: number | undefined]
+  'update:reasoningEffort': [value: ReasoningEffort]
+  'update:verbosity': [value: Verbosity]
 }>()
 
+// === Stores ===
 const { t } = useI18n()
 const langStore = useLanguageStore()
-// Create computed properties for slider values (which expect arrays)
-const temperatureValue = computed({
-  get: () => [props.temperature],
-  set: (value) => emit('update:temperature', value[0])
+
+// === Composable Integrations ===
+
+// Model type detection
+const modelTypeDetection = useModelTypeDetection({
+  modelId: toRef(props, 'modelId'),
+  providerId: toRef(props, 'providerId'),
+  modelType: toRef(props, 'modelType')
 })
 
-const contextLengthValue = computed({
-  get: () => [props.contextLength],
-  set: (value) => emit('update:contextLength', value[0])
+// Model capabilities
+const capabilities = useModelCapabilities({
+  providerId: toRef(props, 'providerId'),
+  modelId: toRef(props, 'modelId')
 })
 
-const maxTokensValue = computed({
-  get: () => [props.maxTokens],
-  set: (value) => emit('update:maxTokens', value[0])
+// Thinking budget
+const thinkingBudget = useThinkingBudget({
+  thinkingBudget: toRef(props, 'thinkingBudget'),
+  budgetRange: capabilities.budgetRange,
+  modelReasoning: modelTypeDetection.modelReasoning,
+  supportsReasoning: capabilities.supportsReasoning
 })
 
-// Computed property for artifacts toggle
-// const artifactsEnabled = computed({
-//   get: () => props.artifacts === 1,
-//   set: (value) => emit('update:artifacts', value ? 1 : 0)
-// })
+// === Utility Functions ===
 
+/**
+ * Format token size for display (K, M notation)
+ */
 const formatSize = (size: number): string => {
   if (size >= 1024 * 1024) {
     return `${(size / (1024 * 1024)).toFixed(1)}M`
@@ -59,19 +94,80 @@ const formatSize = (size: number): string => {
   }
   return `${size}`
 }
+
+// === Field Configurations ===
+const { sliderFields, inputFields, selectFields } = useChatConfigFields({
+  // Props
+  temperature: toRef(props, 'temperature'),
+  contextLength: toRef(props, 'contextLength'),
+  maxTokens: toRef(props, 'maxTokens'),
+  contextLengthLimit: toRef(props, 'contextLengthLimit'),
+  maxTokensLimit: toRef(props, 'maxTokensLimit'),
+  thinkingBudget: toRef(props, 'thinkingBudget'),
+  reasoningEffort: toRef(props, 'reasoningEffort'),
+  verbosity: toRef(props, 'verbosity'),
+  providerId: toRef(props, 'providerId'),
+
+  // Composables
+  supportsTemperatureControl: capabilities.supportsTemperatureControl,
+  showThinkingBudget: thinkingBudget.showThinkingBudget,
+  thinkingBudgetError: thinkingBudget.validationError,
+  budgetRange: capabilities.budgetRange,
+
+  // Utils
+  formatSize,
+
+  // Emits
+  emit
+})
+
+// === Local State & Computed ===
+
+// Clear system prompt when switching to image generation model
+watch(
+  () => props.modelType,
+  (newType) => {
+    if ((newType === 'imageGeneration' || newType === 'videoGeneration') && systemPrompt.value) {
+      systemPrompt.value = ''
+    }
+  }
+)
+
+// Model type icon mapping
+const modelTypeIcon = computed(() => {
+  const icons = {
+    chat: 'lucide:message-circle',
+    imageGeneration: 'lucide:image',
+    videoGeneration: 'lucide:clapperboard',
+    tts: 'lucide:volume-2',
+    embedding: 'lucide:layers',
+    rerank: 'lucide:arrow-up-down'
+  }
+  return icons[props.modelType || 'chat']
+})
 </script>
 
 <template>
   <div class="pt-2 pb-6 px-2" :dir="langStore.dir">
-    <h2 class="text-xs text-muted-foreground px-2">{{ t('settings.model.title') }}</h2>
+    <!-- Header -->
+    <div class="flex items-center gap-2 px-2 mb-2">
+      <h2 class="text-xs text-muted-foreground">{{ t('settings.model.title') }}</h2>
+      <Icon :icon="modelTypeIcon" class="w-3 h-3 text-muted-foreground" />
+    </div>
 
     <div class="space-y-6">
-      <!-- System Prompt -->
-      <div class="space-y-2 px-2">
+      <!-- System Prompt (hidden for image generation models) -->
+      <div
+        v-if="
+          !modelTypeDetection.isImageGenerationModel.value &&
+          !modelTypeDetection.isVideoGenerationModel.value
+        "
+        class="space-y-2 px-2"
+      >
         <div class="flex items-center space-x-2 py-1.5">
           <Icon icon="lucide:terminal" class="w-4 h-4 text-muted-foreground" />
           <Label class="text-xs font-medium">{{ t('settings.model.systemPrompt.label') }}</Label>
-          <TooltipProvider>
+          <TooltipProvider :ignoreNonKeyboardFocus="true" :delayDuration="200">
             <Tooltip>
               <TooltipTrigger>
                 <Icon icon="lucide:help-circle" class="w-4 h-4 text-muted-foreground" />
@@ -88,102 +184,52 @@ const formatSize = (size: number): string => {
         />
       </div>
 
-      <!-- Temperature -->
-      <div class="space-y-4 px-2">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center space-x-2">
-            <Icon icon="lucide:thermometer" class="w-4 h-4 text-muted-foreground" />
-            <Label class="text-xs font-medium">{{ t('settings.model.temperature.label') }}</Label>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger>
-                  <Icon icon="lucide:help-circle" class="w-4 h-4 text-muted-foreground" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{{ t('settings.model.temperature.description') }}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-          <span class="text-xs text-muted-foreground">{{ temperatureValue[0] }}</span>
-        </div>
-        <Slider v-model="temperatureValue" :min="0.1" :max="1.5" :step="0.1" />
-      </div>
+      <!-- Slider Fields (Temperature, Context Length, Response Length) -->
+      <ConfigSliderField
+        v-for="field in sliderFields"
+        :key="field.key"
+        :model-value="field.getValue()"
+        :icon="field.icon"
+        :label="field.label"
+        :description="field.description || ''"
+        :min="field.min"
+        :max="field.max"
+        :step="field.step"
+        :formatter="field.formatter"
+        @update:model-value="field.setValue"
+      />
 
-      <!-- Context Length -->
-      <div class="space-y-4 px-2">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center space-x-2">
-            <Icon icon="lucide:pencil-ruler" class="w-4 h-4 text-muted-foreground" />
-            <Label class="text-xs font-medium">{{ t('settings.model.contextLength.label') }}</Label>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger>
-                  <Icon icon="lucide:help-circle" class="w-4 h-4 text-muted-foreground" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{{ t('settings.model.contextLength.description') }}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-          <span class="text-xs text-muted-foreground">{{ formatSize(contextLengthValue[0]) }}</span>
-        </div>
-        <Slider
-          v-model="contextLengthValue"
-          :min="2048"
-          :max="contextLengthLimit ?? 16384"
-          :step="1024"
-        />
-      </div>
+      <!-- Input Fields (Thinking Budget) -->
+      <ConfigInputField
+        v-for="field in inputFields"
+        :key="field.key"
+        :model-value="field.getValue()"
+        :icon="field.icon"
+        :label="field.label"
+        :description="field.description"
+        :type="field.inputType"
+        :min="field.min"
+        :max="field.max"
+        :step="field.step"
+        :placeholder="field.placeholder"
+        :error="field.error?.()"
+        :hint="field.hint?.()"
+        @update:model-value="field.setValue"
+      />
 
-      <!-- Response Length -->
-      <div class="space-y-4 px-2">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center space-x-2">
-            <Icon icon="lucide:message-circle-reply" class="w-4 h-4 text-muted-foreground" />
-            <Label class="text-xs font-medium">{{
-              t('settings.model.responseLength.label')
-            }}</Label>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger>
-                  <Icon icon="lucide:help-circle" class="w-4 h-4 text-muted-foreground" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{{ t('settings.model.responseLength.description') }}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-          <span class="text-xs text-muted-foreground">{{ formatSize(maxTokensValue[0]) }}</span>
-        </div>
-        <Slider
-          v-model="maxTokensValue"
-          :min="1024"
-          :max="!maxTokensLimit || maxTokensLimit < 8192 ? 8192 : maxTokensLimit"
-          :step="128"
-        />
-      </div>
-      <!-- Artifacts Toggle -->
-      <!-- <div class="space-y-2 px-2">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center space-x-2">
-            <Label for="artifacts-mode">Artifacts</Label>
-            <Switch id="artifacts-mode" v-model:checked="artifactsEnabled" />
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger>
-                  <Icon icon="lucide:help-circle" class="w-4 h-4 text-muted-foreground" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{{ t('settings.model.artifacts.description') }}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-        </div>
-      </div> -->
+      <!-- Select Fields (Reasoning Effort, Verbosity) -->
+      <ConfigSelectField
+        v-for="field in selectFields"
+        :key="field.key"
+        :model-value="field.getValue()"
+        :icon="field.icon"
+        :label="field.label"
+        :description="field.description"
+        :options="typeof field.options === 'function' ? field.options() : field.options"
+        :placeholder="field.placeholder"
+        :hint="field.hint"
+        @update:model-value="field.setValue"
+      />
     </div>
   </div>
 </template>

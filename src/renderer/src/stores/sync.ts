@@ -1,128 +1,285 @@
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
-import { usePresenter } from '@/composables/usePresenter'
-import { SYNC_EVENTS } from '@/events'
+import { createDeviceClient } from '@api/DeviceClient'
+import { createSyncClient } from '@api/SyncClient'
+import { createConfigClient } from '../../api/ConfigClient'
+import { useIpcQuery } from '@/composables/useIpcQuery'
+import { useIpcMutation } from '@/composables/useIpcMutation'
+import type { EntryKey, UseQueryReturn } from '@pinia/colada'
+import type { SyncBackupInfo, CloudSyncConfigView, CloudSyncConfigInput } from '@shared/presenter'
 
 export const useSyncStore = defineStore('sync', () => {
-  // 状态
   const syncEnabled = ref(false)
   const syncFolderPath = ref('')
   const lastSyncTime = ref(0)
   const isBackingUp = ref(false)
   const isImporting = ref(false)
-  const importResult = ref<{ success: boolean; message: string } | null>(null)
+  const importResult = ref<{
+    success: boolean
+    message: string
+    count?: number
+    sourceDbType?: 'agent' | 'chat'
+    importedSessions?: number
+  } | null>(null)
 
-  // 获取 presenter 实例
-  const configPresenter = usePresenter('configPresenter')
-  const syncPresenter = usePresenter('syncPresenter')
-  const devicePresenter = usePresenter('devicePresenter')
+  // Cloud sync (S3-compatible) state
+  const cloudConfig = ref<CloudSyncConfigView | null>(null)
+  const isCloudBusy = ref(false)
 
-  // 初始化函数
+  const configClient = createConfigClient()
+  const syncClient = createSyncClient()
+  const deviceClient = createDeviceClient()
+  let syncEventsRegistered = false
+  let syncSettingsListenerRegistered = false
+
+  const backupQueryKey = (): EntryKey => ['sync', 'backups'] as const
+
+  const backupsQuery = useIpcQuery({
+    key: backupQueryKey,
+    query: () => syncClient.listBackups(),
+    staleTime: 60_000,
+    gcTime: 300_000
+  }) as UseQueryReturn<SyncBackupInfo[]>
+
+  const backups = computed(() => {
+    const list = backupsQuery.data.value ?? []
+    return [...list].sort((a, b) => b.createdAt - a.createdAt)
+  })
+
+  const refreshBackups = async () => {
+    try {
+      await backupsQuery.refetch()
+    } catch (error) {
+      console.error('刷新备份列表失败:', error)
+    }
+  }
+
+  const startBackupMutation = useIpcMutation({
+    mutation: () => syncClient.startBackup(),
+    invalidateQueries: () => [backupQueryKey()]
+  })
+
+  const startBackup = async (): Promise<SyncBackupInfo | null> => {
+    if (!syncEnabled.value || isBackingUp.value) return null
+
+    isBackingUp.value = true
+    try {
+      const backupInfo = (await startBackupMutation.mutateAsync([])) as SyncBackupInfo | null
+      if (backupInfo) {
+        await refreshBackups()
+      }
+      return backupInfo
+    } catch (error) {
+      console.error('backup failed:', error)
+      return null
+    } finally {
+      isBackingUp.value = false
+    }
+  }
+
+  const importBackupMutation = useIpcMutation({
+    mutation: (backupFile: string, mode: 'increment' | 'overwrite') =>
+      syncClient.importFromSync(backupFile, mode),
+    invalidateQueries: () => [backupQueryKey()]
+  })
+
+  const importData = async (
+    backupFile: string,
+    mode: 'increment' | 'overwrite' = 'increment'
+  ): Promise<{
+    success: boolean
+    message: string
+    count?: number
+    sourceDbType?: 'agent' | 'chat'
+    importedSessions?: number
+  } | null> => {
+    if (!syncEnabled.value || isImporting.value || !backupFile) return null
+
+    isImporting.value = true
+    try {
+      const result = (await importBackupMutation.mutateAsync([backupFile, mode])) as {
+        success: boolean
+        message: string
+        count?: number
+        sourceDbType?: 'agent' | 'chat'
+        importedSessions?: number
+      }
+      importResult.value = result.success ? null : result
+      return result
+    } catch (error) {
+      console.error('import failed:', error)
+      importResult.value = {
+        success: false,
+        message: 'sync.error.importFailed'
+      }
+      return importResult.value
+    } finally {
+      isImporting.value = false
+      await refreshBackups()
+    }
+  }
+
+  const loadCloudConfig = async () => {
+    try {
+      cloudConfig.value = await syncClient.getCloudConfig()
+    } catch (error) {
+      console.error('load cloud config failed:', error)
+    }
+    return cloudConfig.value
+  }
+
+  const saveCloudConfig = async (config: CloudSyncConfigInput) => {
+    if (isCloudBusy.value) return cloudConfig.value
+    isCloudBusy.value = true
+    try {
+      cloudConfig.value = await syncClient.setCloudConfig(config)
+      return cloudConfig.value
+    } finally {
+      isCloudBusy.value = false
+    }
+  }
+
+  const testCloud = async () => {
+    if (isCloudBusy.value) return null
+    isCloudBusy.value = true
+    try {
+      return await syncClient.testCloudConnection()
+    } finally {
+      isCloudBusy.value = false
+    }
+  }
+
+  const uploadToCloud = async () => {
+    if (isCloudBusy.value) return null
+    isCloudBusy.value = true
+    try {
+      return await syncClient.uploadToCloud()
+    } finally {
+      isCloudBusy.value = false
+    }
+  }
+
+  const pullFromCloud = async (mode: 'increment' | 'overwrite' = 'increment') => {
+    if (isCloudBusy.value) return null
+    isCloudBusy.value = true
+    try {
+      const result = await syncClient.pullFromCloud(mode)
+      if (result && !result.success) {
+        importResult.value = result
+      }
+      return result
+    } finally {
+      isCloudBusy.value = false
+      await refreshBackups()
+    }
+  }
+
   const initialize = async () => {
-    // 加载同步设置
-    syncEnabled.value = await configPresenter.getSyncEnabled()
-    syncFolderPath.value = await configPresenter.getSyncFolderPath()
+    syncEnabled.value = await configClient.getSyncEnabled()
+    syncFolderPath.value = await configClient.getSyncFolderPath()
 
-    // 加载备份状态
-    const status = await syncPresenter.getBackupStatus()
+    const status = await syncClient.getBackupStatus()
     lastSyncTime.value = status.lastBackupTime
     isBackingUp.value = status.isBackingUp
 
-    // 监听备份状态变化事件
-    window.electron.ipcRenderer.on(SYNC_EVENTS.BACKUP_STARTED, () => {
+    await refreshBackups()
+    await loadCloudConfig()
+    setupSyncEventListeners()
+    setupSyncSettingsListener()
+  }
+
+  const setupSyncEventListeners = () => {
+    if (syncEventsRegistered) {
+      return
+    }
+
+    syncEventsRegistered = true
+
+    syncClient.onBackupStarted(() => {
       isBackingUp.value = true
     })
 
-    window.electron.ipcRenderer.on(SYNC_EVENTS.BACKUP_COMPLETED, (_event, time) => {
+    syncClient.onBackupCompleted(({ timestamp }) => {
       isBackingUp.value = false
-      lastSyncTime.value = time
+      lastSyncTime.value = timestamp
     })
 
-    window.electron.ipcRenderer.on(SYNC_EVENTS.BACKUP_ERROR, () => {
+    syncClient.onBackupError(() => {
       isBackingUp.value = false
     })
 
-    // 导入事件
-    window.electron.ipcRenderer.on(SYNC_EVENTS.IMPORT_STARTED, () => {
+    syncClient.onImportStarted(() => {
       isImporting.value = true
     })
 
-    window.electron.ipcRenderer.on(SYNC_EVENTS.IMPORT_COMPLETED, () => {
+    syncClient.onImportCompleted(() => {
       isImporting.value = false
     })
 
-    window.electron.ipcRenderer.on(SYNC_EVENTS.IMPORT_ERROR, () => {
+    syncClient.onImportError(() => {
       isImporting.value = false
     })
   }
 
-  // 更新同步启用状态
   const setSyncEnabled = async (enabled: boolean) => {
     syncEnabled.value = enabled
-    await configPresenter.setSyncEnabled(enabled)
+    await configClient.setSyncEnabled(enabled)
   }
 
-  // 更新同步文件夹路径
   const setSyncFolderPath = async (path: string) => {
     syncFolderPath.value = path
-    await configPresenter.setSyncFolderPath(path)
+    await configClient.setSyncFolderPath(path)
+    await refreshBackups()
   }
 
-  // 选择同步文件夹
   const selectSyncFolder = async () => {
-    const result = await devicePresenter.selectDirectory()
+    const result = await deviceClient.selectDirectory()
     if (result && !result.canceled && result.filePaths.length > 0) {
       await setSyncFolderPath(result.filePaths[0])
     }
   }
 
-  // 打开同步文件夹
   const openSyncFolder = async () => {
     if (!syncEnabled.value) return
-    await syncPresenter.openSyncFolder()
+    await syncClient.openSyncFolder()
   }
 
-  // 开始备份
-  const startBackup = async () => {
-    if (!syncEnabled.value || isBackingUp.value) return
-
-    try {
-      await syncPresenter.startBackup()
-    } catch (error) {
-      console.error('备份失败:', error)
-    }
-  }
-
-  // 导入数据
-  const importData = async (mode: 'increment' | 'overwrite' = 'increment') => {
-    if (!syncEnabled.value || isImporting.value) return
-
-    isImporting.value = true
-    const result = await syncPresenter.importFromSync(mode)
-    importResult.value = result
-    isImporting.value = false
-  }
-
-  // 重启应用
   const restartApp = async () => {
-    await devicePresenter.restartApp()
+    await deviceClient.restartApp()
   }
 
-  // 清除导入结果
   const clearImportResult = () => {
     importResult.value = null
   }
 
+  const setupSyncSettingsListener = () => {
+    if (syncSettingsListenerRegistered) {
+      return
+    }
+
+    syncSettingsListenerRegistered = true
+    configClient.onSyncSettingsChanged(async ({ enabled, folderPath }) => {
+      syncEnabled.value = enabled
+      if (folderPath !== syncFolderPath.value) {
+        syncFolderPath.value = folderPath
+        await refreshBackups()
+        return
+      }
+      syncFolderPath.value = folderPath
+    })
+  }
+
   return {
-    // 状态
     syncEnabled,
     syncFolderPath,
     lastSyncTime,
     isBackingUp,
     isImporting,
     importResult,
+    backups,
+    cloudConfig,
+    isCloudBusy,
 
-    // 方法
     initialize,
     setSyncEnabled,
     setSyncFolderPath,
@@ -131,6 +288,12 @@ export const useSyncStore = defineStore('sync', () => {
     startBackup,
     importData,
     restartApp,
-    clearImportResult
+    clearImportResult,
+    refreshBackups,
+    loadCloudConfig,
+    saveCloudConfig,
+    testCloud,
+    uploadToCloud,
+    pullFromCloud
   }
 })

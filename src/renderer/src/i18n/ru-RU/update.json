@@ -4,11 +4,17 @@
   "releaseDate": "Дата выпуска",
   "releaseNotes": "Примечания к выпуску",
   "later": "Позже",
-  "githubDownload": "Скачать с Github",
-  "netdiskDownload": "Скачать с облака",
+  "githubDownload": "Скачать с GitHub",
+  "officialDownload": "Скачать с сайта",
   "checkUpdate": "Проверить обновления",
   "autoUpdate": "Автоматическое обновление",
   "downloading": "Загрузка",
-  "installNow": "Установить сейчас",
-  "restarting": "Перезапуск"
+  "installNow": "Установить",
+  "installUpdate": "Установить обновление",
+  "versionAvailable": "Версия {version} доступна",
+  "autoUpdateFailed": "Не удалось выполнить автоматическое обновление. Пожалуйста, используйте ссылки для ручной загрузки ниже.",
+  "topbarButton": "Обновить",
+  "restarting": "Перезапуск",
+  "alreadyUpToDate": "Уже обновлено",
+  "alreadyUpToDateDesc": "Ваш DeepChat уже обновлен до последней версии, обновление не требуется."
 }

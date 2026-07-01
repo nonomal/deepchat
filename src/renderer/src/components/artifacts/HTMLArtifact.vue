@@ -1,17 +1,26 @@
 <template>
-  <div class="w-full h-full overflow-auto">
-    <iframe
-      ref="iframeRef"
-      :srcdoc="block.content"
-      class="w-full h-full min-h-[400px] html-iframe-wrapper"
-      sandbox="allow-scripts allow-same-origin"
-    ></iframe>
+  <div :class="containerClasses" data-testid="html-artifact-root">
+    <div :class="frameContainerClasses">
+      <iframe
+        ref="iframeRef"
+        :srcdoc="block.content"
+        :class="viewportClasses"
+        :style="viewportStyles"
+        sandbox="allow-scripts allow-same-origin"
+        data-testid="html-artifact-iframe"
+      ></iframe>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-// import DOMPurify from 'dompurify'
+import { ref, onMounted, computed, watch } from 'vue'
+
+// Fixed viewport dimensions
+const VIEWPORT_SIZES = {
+  tablet: { width: 768, height: 1024 },
+  mobile: { width: 375, height: 667 }
+}
 
 const props = defineProps<{
   block: {
@@ -22,26 +31,84 @@ const props = defineProps<{
     content: string
   }
   isPreview: boolean
+  viewportSize?: 'desktop' | 'tablet' | 'mobile'
 }>()
 
 const iframeRef = ref<HTMLIFrameElement>()
+const resolvedViewportSize = computed(() => props.viewportSize || 'desktop')
 
-// const sanitizedContent = computed(() => {
-//   if (!props.block.content) return ''
-//   return DOMPurify.sanitize(props.block.content, {
-//     WHOLE_DOCUMENT: true,
-//     ADD_TAGS: ['script', 'style'],
-//     ADD_ATTR: ['src', 'style', 'onclick'],
-//     ALLOWED_URI_REGEXP:
-//       /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|xxx):|[^a-z]|[a-z+.]+(?:[^a-z+.:]|$))/i
-//   })
-// })
+const containerClasses = computed(() => {
+  if (resolvedViewportSize.value === 'desktop') {
+    return 'flex h-full min-h-0 w-full overflow-hidden'
+  }
 
-onMounted(() => {
+  return 'flex h-full min-h-0 w-full items-center justify-center overflow-auto'
+})
+
+const frameContainerClasses = computed(() => {
+  if (resolvedViewportSize.value === 'desktop') {
+    return 'h-full min-h-0 w-full'
+  }
+
+  return 'relative shrink-0'
+})
+
+const viewportClasses = computed(() => {
+  const size = resolvedViewportSize.value
+  const baseClasses = 'html-iframe-wrapper transition-all duration-300 ease-in-out'
+
+  switch (size) {
+    case 'mobile':
+    case 'tablet':
+      return `${baseClasses} border border-gray-300 dark:border-gray-600 relative`
+    default:
+      return `${baseClasses} block h-full min-h-0 w-full`
+  }
+})
+
+const viewportStyles = computed(() => {
+  const size = resolvedViewportSize.value
+
+  if (size === 'mobile' || size === 'tablet') {
+    const dimensions = VIEWPORT_SIZES[size]
+    return {
+      width: `${dimensions.width}px`,
+      height: `${dimensions.height}px`
+    }
+  }
+
+  return {}
+})
+
+const setupIframe = () => {
   if (props.isPreview && iframeRef.value) {
     const iframe = iframeRef.value
     iframe.onload = () => {
-      // 移除动态高度调整，让外层容器控制滚动
+      const doc = iframe.contentDocument
+      if (!doc) return
+
+      // Add viewport meta tag
+      const viewportSize = resolvedViewportSize.value
+      let viewportContent = 'width=device-width, initial-scale=1.0'
+
+      if (viewportSize === 'mobile' || viewportSize === 'tablet') {
+        const width = VIEWPORT_SIZES[viewportSize].width
+        viewportContent = `width=${width}, initial-scale=1.0`
+      }
+
+      // Remove existing viewport meta tag
+      const existingViewport = doc.querySelector('meta[name="viewport"]')
+      if (existingViewport) {
+        existingViewport.remove()
+      }
+
+      // Add new viewport meta tag
+      const viewportMeta = doc.createElement('meta')
+      viewportMeta.name = 'viewport'
+      viewportMeta.content = viewportContent
+      doc.head.appendChild(viewportMeta)
+
+      // Add base styles
       const resetCSS = `
       * {
         margin: 0;
@@ -50,7 +117,7 @@ onMounted(() => {
       }
       html, body {
         height: 100%;
-        font-family: Arial, sans-serif;
+        font-family: var(--dc-font-family, Arial, sans-serif);
       }
       img {
         max-width: 100%;
@@ -61,10 +128,22 @@ onMounted(() => {
         color: inherit;
       }
     `
-      const styleElement = document.createElement('style')
+      const styleElement = doc.createElement('style')
       styleElement.textContent = resetCSS
-      iframeRef.value?.contentDocument?.head.appendChild(styleElement)
+      doc.head.appendChild(styleElement)
     }
   }
+}
+
+onMounted(() => {
+  setupIframe()
 })
+
+// Watch viewport size changes
+watch(
+  () => props.viewportSize,
+  () => {
+    setupIframe()
+  }
+)
 </script>

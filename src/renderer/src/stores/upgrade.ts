@@ -1,245 +1,375 @@
-import { usePresenter } from '@/composables/usePresenter'
-import { UPDATE_EVENTS } from '@/events'
+import { createDeviceClient } from '@api/DeviceClient'
+import { createUpgradeClient } from '@api/UpgradeClient'
 import { defineStore } from 'pinia'
-import { onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+
+type PresenterUpdateStatus =
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+  | null
+
+type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'ready_to_install' | 'error'
+
+type UpdateInfo = {
+  version: string
+  releaseDate: string
+  releaseNotes: string
+  githubUrl?: string
+  downloadUrl?: string
+  isMock?: boolean
+}
+
+type ProgressInfo = {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+}
+
+type PresenterStatusSnapshot = {
+  status: PresenterUpdateStatus
+  progress: ProgressInfo | null
+  error: string | null
+  updateInfo: UpdateInfo | null
+}
+
+const DEFAULT_UPDATE_ERROR = 'Update error'
+
+const toUpdateInfo = (info: UpdateInfo | null | undefined): UpdateInfo | null => {
+  if (!info) return null
+
+  return {
+    version: info.version,
+    releaseDate: info.releaseDate,
+    releaseNotes: info.releaseNotes,
+    githubUrl: info.githubUrl,
+    downloadUrl: info.downloadUrl,
+    isMock: info.isMock
+  }
+}
+
+const toProgressInfo = (progress: ProgressInfo | null | undefined): ProgressInfo | null => {
+  if (!progress) return null
+
+  return {
+    percent: progress.percent,
+    bytesPerSecond: progress.bytesPerSecond,
+    transferred: progress.transferred,
+    total: progress.total
+  }
+}
 
 export const useUpgradeStore = defineStore('upgrade', () => {
-  const upgradeP = usePresenter('upgradePresenter')
-  const hasUpdate = ref(false)
-  const updateInfo = ref<{
-    version: string
-    releaseDate: string
-    releaseNotes: string
-    githubUrl?: string
-    downloadUrl?: string
-  } | null>(null)
-  const showUpdateDialog = ref(false)
+  const upgradeClient = createUpgradeClient()
+  const deviceClient = createDeviceClient()
+
+  const rawStatus = ref<PresenterUpdateStatus>(null)
+  const updateInfo = ref<UpdateInfo | null>(null)
   const isUpdating = ref(false)
-  const isChecking = ref(false)
-  // 添加在 const updateInfo = ref<any>(null) 附近
-  const updateProgress = ref<{
-    percent: number
-    bytesPerSecond: number
-    transferred: number
-    total: number
-  } | null>(null)
-  const isDownloading = ref(false)
-  const isReadyToInstall = ref(false)
+  const updateProgress = ref<ProgressInfo | null>(null)
   const isRestarting = ref(false)
   const updateError = ref<string | null>(null)
-  // 检查更新
-  const checkUpdate = async () => {
-    if (isChecking.value) return
-    isChecking.value = true
-    try {
-      await upgradeP.checkUpdate()
-      const status = upgradeP.getUpdateStatus()
-      hasUpdate.value = status.status === 'available' || status.status === 'downloaded'
-      if (hasUpdate.value && status.updateInfo) {
-        updateInfo.value = {
-          version: status.updateInfo.version,
-          releaseDate: status.updateInfo.releaseDate,
-          releaseNotes: status.updateInfo.releaseNotes,
-          githubUrl: status.updateInfo.githubUrl,
-          downloadUrl: status.updateInfo.downloadUrl
-        }
+  const isSilent = ref(true)
+  const platform = ref<string | null>(null)
+  const listenersReady = ref(false)
+  let externalMutationToken = 0
+  let latestSyncRequestId = 0
 
-        // 检查是否已经下载完成，只有在下载完成的情况下才打开对话框
-        if (status.status === 'downloaded') {
-          openUpdateDialog()
-        }
-        // 否则不打开对话框，让更新在后台静默下载
+  const isWindows = computed(() => platform.value === 'win32')
+
+  const hasUpdate = computed(() => Boolean(updateInfo.value))
+  const isMockUpdate = computed(() => Boolean(updateInfo.value?.isMock))
+
+  const updateState = computed<UpdateState>(() => {
+    switch (rawStatus.value) {
+      case 'checking':
+        return 'checking'
+      case 'available':
+        return 'available'
+      case 'downloading':
+        return 'downloading'
+      case 'downloaded':
+        return 'ready_to_install'
+      case 'error':
+        return updateInfo.value ? 'error' : 'idle'
+      default:
+        return 'idle'
+    }
+  })
+
+  const isChecking = computed(() => updateState.value === 'checking')
+  const isDownloading = computed(() => updateState.value === 'downloading')
+  const isReadyToInstall = computed(() => updateState.value === 'ready_to_install')
+  const shouldShowUpdateNotes = computed(() => hasUpdate.value)
+  const shouldShowTopbarInstallButton = computed(() => isReadyToInstall.value)
+  const showManualDownloadOptions = computed(
+    () => rawStatus.value === 'error' && Boolean(updateInfo.value)
+  )
+
+  const applyProgress = (
+    progress?: ProgressInfo | null,
+    source: 'external' | 'sync' = 'external',
+    mutationToken = externalMutationToken
+  ) => {
+    if (source === 'external') {
+      externalMutationToken += 1
+    } else if (mutationToken !== externalMutationToken) {
+      return
+    }
+
+    updateProgress.value = toProgressInfo(progress)
+  }
+
+  const syncFromPresenterStatus = async (): Promise<PresenterUpdateStatus> => {
+    const requestId = ++latestSyncRequestId
+    const mutationTokenBeforeRequest = externalMutationToken
+    try {
+      const snapshot = (await upgradeClient.getUpdateStatus()) as PresenterStatusSnapshot | null
+
+      if (!snapshot || snapshot.status == null) {
+        return rawStatus.value
       }
+
+      if (
+        requestId !== latestSyncRequestId ||
+        externalMutationToken !== mutationTokenBeforeRequest
+      ) {
+        return rawStatus.value
+      }
+
+      applyStatus(snapshot.status, snapshot.updateInfo, snapshot.error, 'sync')
+      applyProgress(snapshot.progress, 'sync', mutationTokenBeforeRequest)
+      return snapshot.status
     } catch (error) {
-      console.error('Failed to check update:', error)
-    } finally {
-      isChecking.value = false
+      console.error('Failed to sync update status:', error)
+      return rawStatus.value
     }
   }
 
-  // 开始下载更新
-  const startUpdate = async (type: 'github' | 'netdisk') => {
+  const applyStatus = (
+    status: PresenterUpdateStatus,
+    info?: UpdateInfo | null,
+    error?: string | null,
+    source: 'external' | 'sync' = 'external'
+  ) => {
+    if (source === 'external') {
+      externalMutationToken += 1
+    }
+
+    rawStatus.value = status
+
+    if (info !== undefined) {
+      updateInfo.value = toUpdateInfo(info)
+    }
+
+    if (status === 'checking') {
+      updateError.value = null
+      updateProgress.value = null
+      isRestarting.value = false
+      return
+    }
+
+    if (status === 'not-available') {
+      updateInfo.value = null
+      updateError.value = null
+      updateProgress.value = null
+      isRestarting.value = false
+      return
+    }
+
+    if (status === 'available') {
+      updateError.value = null
+      updateProgress.value = null
+      isRestarting.value = false
+      return
+    }
+
+    if (status === 'downloading') {
+      updateError.value = null
+      isRestarting.value = false
+      return
+    }
+
+    if (status === 'downloaded') {
+      updateError.value = null
+      isRestarting.value = false
+      return
+    }
+
+    if (status === 'error') {
+      updateError.value = error || DEFAULT_UPDATE_ERROR
+      isRestarting.value = false
+      return
+    }
+  }
+
+  const loadDeviceInfo = async () => {
     try {
-      return await upgradeP.goDownloadUpgrade(type)
+      const deviceInfo = await deviceClient.getDeviceInfo()
+      platform.value = deviceInfo?.platform ?? null
+    } catch (error) {
+      console.error('Failed to load device info:', error)
+    }
+  }
+
+  void loadDeviceInfo()
+
+  const checkUpdate = async (silent = true) => {
+    isSilent.value = silent
+    if (isChecking.value) return rawStatus.value
+
+    try {
+      applyStatus('checking', updateInfo.value, null)
+      await upgradeClient.checkUpdate()
+      return await syncFromPresenterStatus()
+    } catch (error) {
+      console.error('Failed to check update:', error)
+      applyStatus('error', updateInfo.value, error instanceof Error ? error.message : String(error))
+      return 'error'
+    }
+  }
+
+  const startUpdate = async (type: 'github' | 'official') => {
+    try {
+      return await upgradeClient.goDownloadUpgrade(type)
     } catch (error) {
       console.error('Failed to start update:', error)
       return false
     }
   }
 
-  // 监听更新状态
-  const setupUpdateListener = () => {
-    console.log('setupUpdateListener')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    window.electron.ipcRenderer.on(UPDATE_EVENTS.STATUS_CHANGED, (_, event: any) => {
-      const { status, info, error } = event
-      console.log(UPDATE_EVENTS.STATUS_CHANGED, status, info, error)
-      // 根据不同状态更新UI
-      switch (status) {
-        case 'available':
-          hasUpdate.value = true
-          updateInfo.value = info
-            ? {
-              version: info.version,
-              releaseDate: info.releaseDate,
-              releaseNotes: info.releaseNotes,
-              githubUrl: info.githubUrl,
-              downloadUrl: info.downloadUrl
-            }
-            : null
-          // 不自动弹出对话框，由主进程自动开始下载
-          break
-        case 'not-available':
-          hasUpdate.value = false
-          updateInfo.value = null
-          isDownloading.value = false
-          isUpdating.value = false
-          break
-        case 'downloading':
-          hasUpdate.value = true
-          isDownloading.value = true
-          isUpdating.value = true
-          break
-        case 'downloaded':
-          hasUpdate.value = true
-          isDownloading.value = false
-          isReadyToInstall.value = true
-          isUpdating.value = false
-          if (info) {
-            updateInfo.value = {
-              version: info.version,
-              releaseDate: info.releaseDate,
-              releaseNotes: info.releaseNotes,
-              githubUrl: info.githubUrl,
-              downloadUrl: info.downloadUrl
-            }
-            // 下载完成后自动打开安装确认对话框
-            openUpdateDialog()
-          }
-          break
-        case 'error':
-          isDownloading.value = false
-          isUpdating.value = false
-
-          // 如果有错误，但仍然有更新信息，说明自动更新失败，需要手动下载
-          if (info) {
-            hasUpdate.value = true
-            updateInfo.value = {
-              version: info.version,
-              releaseDate: info.releaseDate,
-              releaseNotes: info.releaseNotes,
-              githubUrl: info.githubUrl,
-              downloadUrl: info.downloadUrl
-            }
-            // 自动更新失败，打开手动下载对话框
-            openUpdateDialog()
-          } else {
-            hasUpdate.value = false
-            updateInfo.value = null
-          }
-
-          updateError.value = error || '更新出错'
-          console.error('Update error:', error)
-          break
+  const mockDownloadedUpdate = async () => {
+    try {
+      const success = await upgradeClient.mockDownloadedUpdate()
+      if (!success) {
+        return rawStatus.value
       }
-    })
 
-    // 监听更新进度
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    window.electron.ipcRenderer.on(UPDATE_EVENTS.PROGRESS, (_, progressData: any) => {
-      console.log(UPDATE_EVENTS.PROGRESS, progressData)
-      if (progressData) {
-        updateProgress.value = {
-          percent: progressData.percent || 0,
-          bytesPerSecond: progressData.bytesPerSecond || 0,
-          transferred: progressData.transferred || 0,
-          total: progressData.total || 0
-        }
+      return await syncFromPresenterStatus()
+    } catch (error) {
+      console.error('Failed to mock downloaded update:', error)
+      applyStatus('error', updateInfo.value, error instanceof Error ? error.message : String(error))
+      return 'error'
+    }
+  }
+
+  const clearMockUpdate = async () => {
+    try {
+      const success = await upgradeClient.clearMockUpdate()
+      if (!success) {
+        return rawStatus.value
       }
-    })
 
-    // 监听即将重启事件
-    window.electron.ipcRenderer.on(UPDATE_EVENTS.WILL_RESTART, () => {
-      console.log(UPDATE_EVENTS.WILL_RESTART)
-      isRestarting.value = true
-    })
-
-    // 监听更新错误
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    window.electron.ipcRenderer.on(UPDATE_EVENTS.ERROR, (_, errorData: any) => {
-      console.error(UPDATE_EVENTS.ERROR, errorData.error)
-      hasUpdate.value = false
-      updateInfo.value = null
-      isDownloading.value = false
-      isUpdating.value = false
-      updateError.value = errorData.error || '更新出错'
-    })
+      return await syncFromPresenterStatus()
+    } catch (error) {
+      console.error('Failed to clear mock update:', error)
+      applyStatus('error', updateInfo.value, error instanceof Error ? error.message : String(error))
+      return 'error'
+    }
   }
 
-  // 打开更新弹窗
-  const openUpdateDialog = () => {
-    showUpdateDialog.value = true
-  }
-
-  // 关闭更新弹窗
-  const closeUpdateDialog = () => {
-    showUpdateDialog.value = false
-  }
-
-  // 处理更新操作 - 修改此方法
-  const handleUpdate = async (type: 'github' | 'netdisk' | 'auto') => {
+  const handleUpdate = async (type: 'github' | 'official' | 'auto') => {
     isUpdating.value = true
     try {
-      // 如果更新已下载，执行安装
       if (isReadyToInstall.value) {
-        await upgradeP.restartToUpdate()
+        await upgradeClient.restartToUpdate()
         return
       }
 
-      // 如果下载中，不做任何操作
       if (isDownloading.value) {
         return
       }
 
-      // 如果是自动更新模式，启动下载
       if (type === 'auto') {
-        const success = await upgradeP.startDownloadUpdate()
+        const success = await upgradeClient.startDownloadUpdate()
         if (!success) {
-          // 如果自动更新失败，则使用手动链接
-          openUpdateDialog()
+          applyStatus('error', updateInfo.value, updateError.value)
         }
         return
       }
 
-      // 否则进行手动更新
-      const success = await startUpdate(type)
-      if (success) {
-        closeUpdateDialog()
-      }
+      await startUpdate(type)
     } catch (error) {
       console.error('Update failed:', error)
+      applyStatus('error', updateInfo.value, error instanceof Error ? error.message : String(error))
     } finally {
       isUpdating.value = false
     }
   }
-  onMounted(() => {
-    setupUpdateListener()
+
+  const handleStatusChanged = (_: unknown, event: Record<string, any>) => {
+    const { status, info, error } = event
+    applyStatus(status as PresenterUpdateStatus, info, error)
+  }
+
+  const handleProgress = (_: unknown, progressData: Record<string, any>) => {
+    applyProgress(
+      progressData
+        ? {
+            percent: progressData.percent || 0,
+            bytesPerSecond: progressData.bytesPerSecond || 0,
+            transferred: progressData.transferred || 0,
+            total: progressData.total || 0
+          }
+        : null
+    )
+  }
+
+  const handleWillRestart = () => {
+    isRestarting.value = true
+  }
+
+  const handleError = (_: unknown, errorData: Record<string, any>) => {
+    applyStatus(
+      updateInfo.value ? 'error' : null,
+      updateInfo.value,
+      errorData?.error || DEFAULT_UPDATE_ERROR
+    )
+  }
+
+  const setupUpdateListener = () => {
+    if (listenersReady.value) {
+      return
+    }
+
+    listenersReady.value = true
+    upgradeClient.onStatusChanged((event) => handleStatusChanged(undefined, event))
+    upgradeClient.onProgress((event) => handleProgress(undefined, event))
+    upgradeClient.onWillRestart(handleWillRestart)
+    upgradeClient.onError((event) => handleError(undefined, event))
+  }
+
+  setupUpdateListener()
+  void syncFromPresenterStatus().catch((error) => {
+    console.error('Failed to sync update status:', error)
   })
+
   return {
-    isChecking,
-    checkUpdate,
-    startUpdate,
-    openUpdateDialog,
-    closeUpdateDialog,
-    handleUpdate,
     hasUpdate,
     updateInfo,
-    showUpdateDialog,
     isUpdating,
     updateProgress,
+    isRestarting,
+    updateError,
+    isSilent,
+    isWindows,
+    updateState,
+    isChecking,
     isDownloading,
     isReadyToInstall,
-    isRestarting,
-    updateError
+    isMockUpdate,
+    shouldShowUpdateNotes,
+    shouldShowTopbarInstallButton,
+    showManualDownloadOptions,
+    refreshStatus: syncFromPresenterStatus,
+    checkUpdate,
+    startUpdate,
+    mockDownloadedUpdate,
+    clearMockUpdate,
+    handleUpdate
   }
 })

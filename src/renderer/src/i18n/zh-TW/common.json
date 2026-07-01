@@ -1,6 +1,7 @@
 {
   "loading": "載入中...",
   "copy": "複製",
+  "copied": "已複製",
   "paste": "貼上",
   "copySuccess": "已複製！",
   "copyCode": "複製程式碼",
@@ -9,10 +10,13 @@
   "newTopic": "新主題",
   "cancel": "取消",
   "confirm": "確認",
+  "next": "下一步",
+  "back": "上一步",
   "enabled": "已啟用",
   "disabled": "已停用",
   "disclaimer": "免責聲明",
   "close": "關閉",
+  "open": "開啟",
   "error": {
     "requestFailed": "請求失敗...",
     "createChatFailed": "建立對話失敗",
@@ -35,7 +39,8 @@
     "error502": "網關錯誤，請求的服務當前可能不太穩定，可以稍後再試試",
     "error503": "服務不可用，請求的服務可能當前不穩定，可以稍後再試試",
     "error504": "請求超時，請求的服務可能當前不穩定或者網絡鏈路有故障，請檢查代理等網絡配置後再試試",
-    "operationFailed": "操作失敗"
+    "operationFailed": "操作失敗",
+    "invalidQuestionRequest": "问题请求无效"
   },
   "resetDataConfirmTitle": "確定要重設所有資料嗎？",
   "resetDataConfirmDescription": "這將會把所有資料還原到預設設定。此操作無法復原。",
@@ -61,6 +66,18 @@
   "collapse": "收起",
   "expand": "展開",
   "image": "圖片",
+  "noContent": "暫無內容",
+  "preview": "預覽",
+  "source": "原始碼",
+  "more": "更多",
+  "decrease": "減小",
+  "increase": "增大",
+  "fontSmaller": "縮小字體",
+  "fontReset": "重置字體",
+  "fontLarger": "放大字體",
+  "zoomIn": "放大",
+  "zoomOut": "縮小",
+  "resetZoom": "重置縮放",
   "add": "新增",
   "edit": "編輯",
   "delete": "刪除",
@@ -70,5 +87,42 @@
   "copyImageSuccessDesc": "圖片已復製到剪貼板",
   "copySuccessDesc": "內容已復製到剪貼板",
   "reset": "重置",
-  "format": "格式"
+  "format": "格式",
+  "save": "儲存",
+  "clear": "清除",
+  "saved": "已保存",
+  "unknownError": "未知錯誤",
+  "testing": "測試中",
+  "saving": "保存中",
+  "scrollLeft": "向左捲動",
+  "scrollRight": "向右捲動",
+  "history": "歷史",
+  "minimize": "最小化",
+  "maximize": "最大化",
+  "restore": "還原",
+  "browser": {
+    "back": "後退",
+    "forward": "前進",
+    "reload": "重新整理",
+    "addressLabel": "網址列",
+    "addressPlaceholder": "輸入網址",
+    "enterUrlDescription": "在上方地址欄輸入網址以訪問網站",
+    "enterUrlToStart": "輸入網址開始訪問",
+    "name": "Yo Browser"
+  },
+  "size": {
+    "bytes": "{count} 位元組"
+  },
+  "time": {
+    "today": "今天",
+    "yesterday": "昨天",
+    "lastWeek": "最近一週",
+    "older": "更早"
+  },
+  "project": {
+    "select": "選擇專案",
+    "none": "未關聯專案",
+    "recent": "最近專案",
+    "openFolder": "開啟資料夾..."
+  }
 }

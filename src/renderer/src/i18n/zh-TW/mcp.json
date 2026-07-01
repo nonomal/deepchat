@@ -1,6 +1,6 @@
 {
   "title": "MCP設定",
-  "description": "管理和配置MCP（Model Control Protocol）伺服器和工具",
+  "description": "管理和配置MCP（Model Context Protocol）伺服器和工具",
   "enabledTitle": "啟用MCP",
   "enabledDescription": "啟用或禁用MCP功能和工具",
   "enableToAccess": "請先啟用MCP以訪問配置選項",
@@ -16,13 +16,18 @@
     "resetToDefaultFailed": "恢復預設伺服器失敗",
     "toggleServerFailed": "切換伺服器 {serverName} 狀態失敗",
     "loadToolsFailed": "載入工具失敗",
+    "loadClientsFailed": "載入 MCP 用戶端失敗",
     "loadPromptsFailed": "載入提示模板失敗",
     "loadResourcesFailed": "載入資源失敗",
     "callToolFailed": "呼叫工具 {toolName} 失敗",
     "toolCallError": "工具呼叫錯誤: {error}",
     "mcpDisabled": "MCP功能已禁用",
     "getPromptFailed": "獲取提示模板失敗",
-    "readResourceFailed": "讀取資源失敗"
+    "readResourceFailed": "讀取資源失敗",
+    "promptNotFound": "未找到提示模板 '{name}'",
+    "emptyPromptContent": "'{name}' Prompt 是空的",
+    "missingParameters": "缺少參數: {params}",
+    "invalidParameters": "無效參數: {params}"
   },
   "tabs": {
     "servers": "伺服器",
@@ -58,7 +63,9 @@
     "commandPlaceholder": "輸入命令",
     "commandRequired": "命令不能為空",
     "args": "參數",
-    "argsPlaceholder": "輸入參數，用空格分隔",
+    "argsPlaceholder": "每行一個參數",
+    "addArg": "新增參數",
+    "argPlaceholder": "輸入參數值",
     "argsRequired": "參數不能為空",
     "env": "環境變量",
     "envPlaceholder": "輸入JSON格式的環境變量",
@@ -157,7 +164,12 @@
     "invalidJson": "無效的 JSON 格式",
     "inputHint": "請以 JSON 格式輸入參數",
     "required": "必填",
-    "noDescription": "無描述"
+    "noDescription": "無描述",
+    "allowedValues": "允許的值",
+    "arrayItemValues": "陣列元素值",
+    "acpManagedHint": "MCP 工具由「ACP Agent」管理",
+    "acpServersNone": "該 Agent 未配置 MCP",
+    "acpServersSelected": "已選擇 {count} 個 MCP"
   },
   "inmemory": {
     "Artifacts": {
@@ -172,17 +184,9 @@
       "desc": "讓 DeepChat 能夠操作本地文件",
       "name": "文件系統"
     },
-    "imageServer": {
-      "desc": "開啟後 DeepChat 中任意模型都能看懂圖片，能生成圖片",
-      "name": "圖片服務"
-    },
     "braveSearch": {
       "desc": "Brave搜索 API https://brave.com/search/api/",
       "name": "Brave搜索"
-    },
-    "powerpack": {
-      "desc": "為任意大模型提供時間查詢、網頁信息獲取和安全的代碼執行等增強能力，讓模型擁有更強大和準確的信息獲取能力",
-      "name": "增強工具包"
     },
     "difyKnowledge": {
       "name": "Dify知識庫檢索",
@@ -211,6 +215,14 @@
     "deepchat-inmemory/conversation-search-server": {
       "name": "對話歷史搜索",
       "desc": "DeepChat內建對話歷史搜索服務，可搜索歷史對話記錄和訊息內容"
+    },
+    "builtinKnowledge": {
+      "desc": "DeepChat內置知識庫檢索服務，可以對DeepChat內置知識庫內容進行檢索",
+      "name": "內置知識庫檢索"
+    },
+    "deepchat/apple-server": {
+      "desc": "讓模型能操作macOS的日曆、聯繫人、郵件、地圖、備忘錄、提醒事項等系統功能",
+      "name": "macOS系統助手"
     }
   },
   "prompts": {
@@ -218,6 +230,7 @@
     "noDescription": "暫無描述",
     "selectPrompt": "此處展示選中的Prompt",
     "parameters": "Prompt 參數",
+    "required": "必填",
     "input": "輸入參數",
     "runningPrompt": "Prompt 獲取中",
     "executeButton": "點擊獲取",
@@ -234,5 +247,63 @@
     "loadContent": "獲取 Resource 內容",
     "pleaseSelect": "點擊獲取展示Resources詳情",
     "dialogDescription": "瀏覽和查看MCP伺服器提供的資源"
+  },
+  "market": {
+    "apiKeyPlaceholder": "輸入 MCPRouter API Key",
+    "apiKeyRequiredDesc": "請先填寫 MCPRouter API Key 後再安裝",
+    "apiKeyRequiredTitle": "需要 API Key",
+    "browseBuiltin": "瀏覽內建 MCP 市場",
+    "builtinTitle": "MCP 市場",
+    "empty": "暫無服務",
+    "install": "安裝",
+    "installFailed": "安裝失敗",
+    "installSuccess": "安裝成功",
+    "installed": "已安裝",
+    "keyGuide": "獲取密鑰",
+    "keyHelpEnd": "申請 API Key 後填寫到上方輸入框",
+    "keyHelpText": "請先到",
+    "loadMore": "載入更多",
+    "noMore": "沒有更多了",
+    "poweredBy": "由 MCPRouter 驅動",
+    "pullDownToLoad": "繼續下拉載入更多"
+  },
+  "sampling": {
+    "approve": "同意",
+    "confirming": "確認中...",
+    "confirm": "發送模型響應",
+    "contentType": {
+      "audio": "音頻",
+      "image": "圖片",
+      "text": "文字"
+    },
+    "description": "查看 MCP 伺服器共享的上下文並選擇是否產生回應。",
+    "imageAlt": "圖片{索引}",
+    "messagesTitle": "對話上下文",
+    "noModels": "沒有啟用符合條件的模型。\n在「設定」中啟用適用的模型以繼續。",
+    "noVisionModels": "未啟用任何具有視覺功能的模型。\n在「設定」中啟用視覺模型以繼續。",
+    "preference": {
+      "cost": "成本優先",
+      "hints": "模型提示",
+      "intelligence": "情報優先",
+      "speed": "速度優先"
+    },
+    "preferencesTitle": "模型偏好",
+    "reject": "拒絕",
+    "selectedModelLabel": "使用 {model} ({provider}) 進行回應",
+    "systemPrompt": "系統提示",
+    "title": "來自 {server} 的取樣請求",
+    "unknownHint": "未命名提示",
+    "unknownMime": "未知的 MIME 類型",
+    "unknownServer": "未知伺服器",
+    "unsupportedMessage": "不支援此內容類型。",
+    "visionWarning": "所選模型不支援視覺輸入。  \n請先選擇一個具有視覺功能的模型，然後再繼續。",
+    "autoApproveIn": "{seconds}秒後自動使用 {model} 批准",
+    "autoApproving": "來自 {server} 的 MCP 採樣請求",
+    "maxTokensInfo": "最大響應長度：{maxTokens} tokens",
+    "respondWith": "響應模型：",
+    "reviewRequest": "查看詳情",
+    "selectModel": "選擇模型",
+    "sendResponse": "發送響應",
+    "sessionActive": "會話活躍 - 請求將被自動批准"
   }
 }

@@ -1,12 +1,25 @@
 {
-  "calling": "در حال فراخوانی",
-  "response": "در حال اجرا",
-  "end": "پایان یافت",
-  "error": "خطا",
-  "title": "فراخوانی ابزار",
-  "clickToView": "برای دیدن جزئیات اینجا بزنید",
+  "calling": "تماس گرفتن",
+  "clickToView": "برای مشاهده جزئیات کلیک کنید",
+  "end": "پایان",
+  "error": "اشتباه",
+  "failed": "شکست بخورد",
+  "fileOperation": "عملیات فایل",
+  "filePath": "مسیر فایل",
+  "fileRead": "خواندن فایل",
+  "fileWrite": "فایل بنویس",
   "functionName": "نام تابع",
-  "permission": "درخواست دسترسی",
-  "params": "ورودی‌های تابع",
-  "responseData": "داده پاسخ"
+  "params": "پارامترهای تابع",
+  "response": "در حال دویدن",
+  "permission": "درخواست اجازه",
+  "responseData": "پاسخ تابع",
+  "imagePreview": "پیش‌نمایش تصویر",
+  "imagePreviewCount": "بدون پیش‌نمایش تصویر | {count} پیش‌نمایش تصویر | {count} پیش‌نمایش تصویر",
+  "success": "موفقیت",
+  "title": "تماس ابزار",
+  "terminalOutput": "خروجی ترمینال",
+  "badge": {
+    "rtk": "RTK"
+  },
+  "replacementsCount": "{count} مورد جایگزین شد"
 }

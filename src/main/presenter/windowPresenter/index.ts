@@ -1,133 +1,111 @@
+import logger from '@shared/logger'
 // src\main\presenter\windowPresenter\index.ts
-import { BrowserWindow, shell, app, nativeImage, ipcMain } from 'electron'
+import {
+  BrowserWindow,
+  shell,
+  nativeImage,
+  screen,
+  webContents as electronWebContents,
+  type WebContents
+} from 'electron'
 import { join } from 'path'
-import icon from '../../../../resources/icon.png?asset' // 应用图标 (macOS/Linux)
-import iconWin from '../../../../resources/icon.ico?asset' // 应用图标 (Windows)
-import { is } from '@electron-toolkit/utils' // Electron 工具库
-import { IWindowPresenter } from '@shared/presenter' // 窗口 Presenter 接口
-import { eventBus } from '@/eventbus' // 事件总线
-import { ConfigPresenter } from '../configPresenter' // 配置 Presenter
-import { CONFIG_EVENTS, SYSTEM_EVENTS, WINDOW_EVENTS } from '@/events' // 系统/窗口/配置 事件常量
-import { presenter } from '../' // 全局 presenter 注册中心
-import windowStateManager from 'electron-window-state' // 窗口状态管理器
-import { SHORTCUT_EVENTS } from '@/events' // 快捷键事件常量
-// TrayPresenter 在 main/index.ts 中全局管理，本 Presenter 不负责其生命周期
-import { TabPresenter } from '../tabPresenter' // TabPresenter 类型
+import { pathToFileURL } from 'url'
+import icon from '../../../../resources/icon.png?asset' // App icon (macOS/Linux)
+import iconWin from '../../../../resources/icon.ico?asset' // App icon (Windows)
+import { is } from '@electron-toolkit/utils' // Electron utilities
+import { IConfigPresenter, IWindowPresenter } from '@shared/presenter' // Window Presenter interface
+import {
+  resolveSettingsNavigationPath,
+  type SettingsNavigationPayload
+} from '@shared/settingsNavigation'
+import { eventBus } from '@/eventbus' // Event bus
+import {
+  CONFIG_EVENTS,
+  DEEPLINK_EVENTS,
+  DEV_EVENTS,
+  SETTINGS_EVENTS,
+  SHORTCUT_EVENTS,
+  WINDOW_EVENTS
+} from '@/events' // System/Window/Config/Shortcut event constants
+import { presenter } from '../' // Global presenter registry
+import { releasePresenterCallErrorStateForWebContents } from '../presenterCallErrorHandler'
+import windowStateManager from 'electron-window-state' // Window state manager
+// TrayPresenter is globally managed in main/index.ts, this Presenter is not responsible for its lifecycle
+import { TabPresenter } from '../tabPresenter' // TabPresenter type
+import { FloatingChatWindow } from './FloatingChatWindow' // Floating chat window
+import type { ProviderInstallPreview } from '@shared/providerDeeplink'
+import { StartupWorkloadCoordinator } from '../startupWorkloadCoordinator'
+import { openExternalUrl } from '@/lib/externalUrl'
+import { activateAppOnMac } from '@/lib/activateApp'
+import { DEEPCHAT_EVENT_CHANNEL } from '@shared/contracts/channels'
+import { createDeepchatEventEnvelope, publishDeepchatEvent } from '@/routes/publishDeepchatEvent'
+
+type PendingSettingsMessage = {
+  channel: string
+  args: unknown[]
+}
 
 /**
- * 窗口 Presenter，负责管理所有 BrowserWindow 实例及其生命周期。
- * 包括创建、销毁、最小化、最大化、隐藏、显示、焦点管理以及与标签页的交互。
+ * Window Presenter, responsible for managing all BrowserWindow instances and their lifecycles.
+ * Including creation, destruction, minimization, maximization, hiding, showing, focus management, and interaction with tabs.
  */
 export class WindowPresenter implements IWindowPresenter {
-  // 管理所有 BrowserWindow 实例的 Map，key 为窗口 ID
+  // Map managing all BrowserWindow instances, key is window ID
   windows: Map<number, BrowserWindow>
-  private configPresenter: ConfigPresenter
-  // 退出标志，表示应用是否正在关闭过程中 (由 'before-quit' 设置)
+  private configPresenter: IConfigPresenter
+  // Exit flag indicating if app is in the process of quitting (set by 'before-quit' hook)
   private isQuitting: boolean = false
-  // 当前获得焦点的窗口 ID (内部记录)
+  // Current focused window ID (internal record)
   private focusedWindowId: number | null = null
+  // Main window ID
+  private mainWindowId: number | null = null
+  private floatingChatWindow: FloatingChatWindow | null = null
+  private settingsWindow: BrowserWindow | null = null
+  private settingsWindowReady = false
+  private pendingSettingsMessages: PendingSettingsMessage[] = []
+  private pendingSettingsProviderInstalls: ProviderInstallPreview[] = []
+  private readonly startupWorkloadCoordinator?: StartupWorkloadCoordinator
 
-  constructor(configPresenter: ConfigPresenter) {
+  private publishWindowStateChanged(windowId: number, existsOverride?: boolean): void {
+    const window = BrowserWindow.fromId(windowId)
+    const exists = existsOverride ?? Boolean(window && !window.isDestroyed())
+
+    publishDeepchatEvent('window.state.changed', {
+      windowId,
+      exists,
+      isMaximized: exists ? window!.isMaximized() : false,
+      isFullScreen: exists ? window!.isFullScreen() : false,
+      isFocused: exists ? window!.isFocused() : false,
+      version: Date.now()
+    })
+  }
+
+  constructor(
+    configPresenter: IConfigPresenter,
+    startupWorkloadCoordinator?: StartupWorkloadCoordinator
+  ) {
     this.windows = new Map()
     this.configPresenter = configPresenter
+    this.startupWorkloadCoordinator = startupWorkloadCoordinator
 
-    // 注册 IPC 处理器，供 Renderer 调用以获取窗口和 WebContents ID
-    ipcMain.on('get-window-id', (event) => {
-      const window = BrowserWindow.fromWebContents(event.sender)
-      event.returnValue = window ? window.id : null
-    })
-
-    ipcMain.on('get-web-contents-id', (event) => {
-      event.returnValue = event.sender.id
-    })
-
-    // 监听应用即将退出的事件，设置退出标志，避免窗口关闭时触发隐藏逻辑
-    app.on('before-quit', () => {
-      console.log('App is quitting, setting isQuitting flag.')
-      this.isQuitting = true
-    })
-
-    // 监听快捷键事件：创建新窗口
+    // Listen for shortcut event: create new window
     eventBus.on(SHORTCUT_EVENTS.CREATE_NEW_WINDOW, () => {
-      console.log('Creating new shell window via shortcut.')
-      this.createShellWindow({ initialTab: { url: 'local://chat' } })
+      logger.info('Creating new app window via shortcut.')
+      this.createAppWindow()
     })
 
-    // 监听快捷键事件：创建新标签页
-    eventBus.on(SHORTCUT_EVENTS.CREATE_NEW_TAB, async (windowId: number) => {
-      console.log(`Creating new tab via shortcut for window ${windowId}.`)
-      const window = this.windows.get(windowId)
-      if (window && !window.isDestroyed()) {
-        await (presenter.tabPresenter as TabPresenter).createTab(windowId, 'local://chat', {
-          active: true
-        })
-      } else {
-        console.warn(
-          `Cannot create new tab for window ${windowId}, window does not exist or is destroyed.`
-        )
+    // Listen for shortcut event: go settings (now opens independent Settings Window)
+    eventBus.on(SHORTCUT_EVENTS.GO_SETTINGS, async () => {
+      try {
+        await this.openOrFocusSettingsWindow()
+      } catch (err) {
+        console.error('Failed to open/focus settings window via eventBus:', err)
       }
-    })
-
-    // 监听快捷键事件：关闭当前标签页
-    eventBus.on(SHORTCUT_EVENTS.CLOSE_CURRENT_TAB, async (windowId: number) => {
-      console.log(`Received CLOSE_CURRENT_TAB for window ${windowId}.`)
-      const window = this.windows.get(windowId)
-      if (!window || window.isDestroyed()) {
-        console.warn(
-          `Cannot handle close tab request, window ${windowId} does not exist or is destroyed.`
-        )
-        return
-      }
-
-      const tabPresenterInstance = presenter.tabPresenter as TabPresenter
-      const tabsData = await tabPresenterInstance.getWindowTabsData(windowId)
-      const activeTab = tabsData.find((tab) => tab.isActive)
-
-      if (activeTab) {
-        if (tabsData.length === 1) {
-          // 窗口内只有最后一个标签页
-          const allWindows = this.getAllWindows()
-          if (allWindows.length === 1) {
-            // 是最后一个窗口的最后一个标签页，隐藏窗口
-            console.log(`Window ${windowId} is the last window's last tab, hiding window.`)
-            this.hide(windowId) // 调用 hide() 会触发 hide 逻辑
-          } else {
-            // 不是最后一个窗口的最后一个标签页，关闭窗口
-            console.log(`Window ${windowId} has other windows, closing this window.`)
-            this.close(windowId) // 调用 close() 会触发 'close' 事件处理器
-          }
-        } else {
-          // 窗口内不止一个标签页，直接关闭当前标签页
-          console.log(`Window ${windowId} has multiple tabs, closing active tab ${activeTab.id}.`)
-          await tabPresenterInstance.closeTab(activeTab.id)
-        }
-      } else {
-        console.warn(`No active tab found in window ${windowId} to close.`)
-      }
-    })
-
-    // 监听系统主题更新事件，通知所有窗口 Renderer
-    eventBus.on(SYSTEM_EVENTS.SYSTEM_THEME_UPDATED, (isDark: boolean) => {
-      console.log('System theme updated, notifying all windows.')
-      this.windows.forEach((window) => {
-        if (!window.isDestroyed()) {
-          window.webContents.send('system-theme-updated', isDark)
-        } else {
-          console.warn(`Skipping theme update for destroyed window ${window.id}.`)
-        }
-      })
-    })
-
-    // 监听强制退出应用事件 (例如：从菜单触发)，设置退出标志并调用 app.quit()
-    eventBus.on(WINDOW_EVENTS.FORCE_QUIT_APP, () => {
-      console.log('Force quitting application.')
-      this.isQuitting = true // 设置退出标志
-      app.quit() // 显式退出应用
     })
 
     // 监听内容保护设置变更事件，更新所有窗口并重启应用
     eventBus.on(CONFIG_EVENTS.CONTENT_PROTECTION_CHANGED, (enabled: boolean) => {
-      console.log(`Content protection setting changed to ${enabled}, restarting application.`)
+      logger.info(`Content protection setting changed to ${enabled}, restarting application.`)
       this.windows.forEach((window) => {
         if (!window.isDestroyed()) {
           this.updateContentProtection(window, enabled)
@@ -140,6 +118,30 @@ export class WindowPresenter implements IWindowPresenter {
         presenter.devicePresenter.restartApp()
       }, 1000)
     })
+
+    // 监听更新进程设置应用退出状态的事件
+    eventBus.on(WINDOW_EVENTS.SET_APPLICATION_QUITTING, (data: { isQuitting: boolean }) => {
+      logger.info(`WindowPresenter: Setting application quitting state to ${data.isQuitting}`)
+      this.setApplicationQuitting(data.isQuitting)
+    })
+  }
+
+  private setupManagedWindowOpenHandler(window: BrowserWindow): void {
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      openExternalUrl(url, 'managed window')
+      return { action: 'deny' }
+    })
+  }
+
+  /**
+   * @deprecated Use openOrFocusSettingsWindow() instead. Settings is now an independent window.
+   * Open Settings tab if not exists, otherwise focus existing one in the given window.
+   * This method is kept for backward compatibility.
+   */
+  public async openOrFocusSettingsTab(_windowId: number): Promise<void> {
+    console.warn('openOrFocusSettingsTab is deprecated. Use openOrFocusSettingsWindow() instead.')
+    // Redirect to new Settings Window
+    await this.openOrFocusSettingsWindow()
   }
 
   /**
@@ -159,16 +161,26 @@ export class WindowPresenter implements IWindowPresenter {
    * @param filePath 文件路径。
    */
   previewFile(filePath: string): void {
-    const window = this.mainWindow
-    if (window) {
-      console.log(`Previewing file: ${filePath}`)
+    let targetWindow = this.getFocusedWindow()
+    if (!targetWindow && this.floatingChatWindow && this.floatingChatWindow.isShowing()) {
+      const floatingWindow = this.floatingChatWindow.getWindow()
+      if (floatingWindow) {
+        targetWindow = floatingWindow
+      }
+    }
+    if (!targetWindow) {
+      targetWindow = this.mainWindow
+    }
+
+    if (targetWindow && !targetWindow.isDestroyed()) {
+      logger.info(`Previewing file: ${filePath}`)
       if (process.platform === 'darwin') {
-        window.previewFile(filePath)
+        targetWindow.previewFile(filePath)
       } else {
         shell.openPath(filePath) // 使用系统默认应用打开
       }
     } else {
-      console.warn('Cannot preview file, no valid main window found.')
+      console.warn('Cannot preview file, no valid window found.')
     }
   }
 
@@ -179,7 +191,7 @@ export class WindowPresenter implements IWindowPresenter {
   minimize(windowId: number): void {
     const window = this.windows.get(windowId)
     if (window && !window.isDestroyed()) {
-      console.log(`Minimizing window ${windowId}.`)
+      logger.info(`Minimizing window ${windowId}.`)
       window.minimize()
     } else {
       console.warn(`Failed to minimize window ${windowId}, window does not exist or is destroyed.`)
@@ -193,7 +205,7 @@ export class WindowPresenter implements IWindowPresenter {
   maximize(windowId: number): void {
     const window = this.windows.get(windowId)
     if (window && !window.isDestroyed()) {
-      console.log(`Maximizing/unmaximizing window ${windowId}.`)
+      logger.info(`Maximizing/unmaximizing window ${windowId}.`)
       if (window.isMaximized()) {
         window.unmaximize()
       } else {
@@ -221,7 +233,7 @@ export class WindowPresenter implements IWindowPresenter {
   close(windowId: number): void {
     const window = this.windows.get(windowId)
     if (window && !window.isDestroyed()) {
-      console.log(`Requesting to close window ${windowId}, calling window.close().`)
+      logger.info(`Requesting to close window ${windowId}, calling window.close().`)
       window.close() // 触发 'close' 事件
     } else {
       console.warn(
@@ -237,7 +249,7 @@ export class WindowPresenter implements IWindowPresenter {
    * @param forceClose 是否强制关闭 (当前实现由 isQuitting 标志控制，此参数未直接使用)。
    */
   async closeWindow(windowId: number, forceClose: boolean = false): Promise<void> {
-    console.log(`closeWindow(${windowId}, ${forceClose}) called.`)
+    logger.info(`closeWindow(${windowId}, ${forceClose}) called.`)
     const window = this.windows.get(windowId)
     if (window && !window.isDestroyed()) {
       window.close() // 触发 'close' 事件
@@ -256,13 +268,13 @@ export class WindowPresenter implements IWindowPresenter {
   hide(windowId: number): void {
     const window = this.windows.get(windowId)
     if (window && !window.isDestroyed()) {
-      console.log(`Hiding window ${windowId}.`)
+      logger.info(`Hiding window ${windowId}.`)
       // 处理全屏窗口隐藏时的黑屏问题
       if (window.isFullScreen()) {
-        console.log(`Window ${windowId} is fullscreen, exiting fullscreen before hiding.`)
+        logger.info(`Window ${windowId} is fullscreen, exiting fullscreen before hiding.`)
         // 退出全屏后监听 leave-full-screen 事件再隐藏
         window.once('leave-full-screen', () => {
-          console.log(`Window ${windowId} left fullscreen, proceeding with hide.`)
+          logger.info(`Window ${windowId} left fullscreen, proceeding with hide.`)
           if (!window.isDestroyed()) {
             window.hide()
           } else {
@@ -271,7 +283,7 @@ export class WindowPresenter implements IWindowPresenter {
         })
         window.setFullScreen(false) // 请求退出全屏
       } else {
-        console.log(`Window ${windowId} is not fullscreen, hiding directly.`)
+        logger.info(`Window ${windowId} is not fullscreen, hiding directly.`)
         window.hide() // 直接隐藏
       }
     } else {
@@ -282,14 +294,15 @@ export class WindowPresenter implements IWindowPresenter {
   /**
    * 显示指定 ID 的窗口。如果未指定 ID，则显示焦点窗口或第一个窗口。
    * @param windowId 可选。要显示的窗口 ID。
+   * @param shouldFocus 可选。是否获取焦点，默认为 true。
    */
-  show(windowId?: number): void {
+  show(windowId?: number, shouldFocus: boolean = true): void {
     let targetWindow: BrowserWindow | undefined
     if (windowId === undefined) {
       // 未指定 ID，查找焦点窗口或第一个窗口
       targetWindow = this.getFocusedWindow() || this.getAllWindows()[0]
       if (targetWindow && !targetWindow.isDestroyed()) {
-        console.log(`Showing default window ${targetWindow.id}.`)
+        logger.info(`Showing default window ${targetWindow.id}.`)
       } else {
         console.warn('No window found to show.')
         return
@@ -297,7 +310,7 @@ export class WindowPresenter implements IWindowPresenter {
     } else {
       targetWindow = this.windows.get(windowId)
       if (targetWindow && !targetWindow.isDestroyed()) {
-        console.log(`Showing window ${windowId}.`)
+        logger.info(`Showing window ${windowId}.`)
       } else {
         console.warn(`Failed to show window ${windowId}, window does not exist or is destroyed.`)
         return
@@ -305,7 +318,10 @@ export class WindowPresenter implements IWindowPresenter {
     }
 
     targetWindow.show()
-    targetWindow.focus() // Bring to foreground
+    if (shouldFocus) {
+      targetWindow.focus() // Bring to foreground
+      activateAppOnMac()
+    }
     // 触发恢复逻辑以确保活动标签页可见且位置正确
     this.handleWindowRestore(targetWindow.id).catch((error) => {
       console.error(`Error handling restore logic after showing window ${targetWindow!.id}:`, error)
@@ -314,43 +330,16 @@ export class WindowPresenter implements IWindowPresenter {
 
   /**
    * 窗口恢复、显示或尺寸变更后的处理逻辑。
-   * 主要确保当前活动标签页的 WebContentsView 可见且位置正确。
    * @param windowId 窗口 ID。
    */
   private async handleWindowRestore(windowId: number): Promise<void> {
-    console.log(`Handling restore/show logic for window ${windowId}.`)
+    logger.info(`Handling restore/show logic for window ${windowId}.`)
     const window = this.windows.get(windowId)
     if (!window || window.isDestroyed()) {
       console.warn(
         `Cannot handle restore/show logic for window ${windowId}, window does not exist or is destroyed.`
       )
       return
-    }
-
-    try {
-      // 通过 TabPresenter 获取活动标签页 ID
-      const tabPresenterInstance = presenter.tabPresenter as TabPresenter
-      const activeTabId = await tabPresenterInstance.getActiveTabId(windowId)
-
-      if (activeTabId) {
-        console.log(`Window ${windowId} restored/shown: activating active tab ${activeTabId}.`)
-        // 调用 switchTab 会确保视图被关联、可见并更新 bounds
-        await tabPresenterInstance.switchTab(activeTabId)
-      } else {
-        console.warn(
-          `Window ${windowId} restored/shown: no active tab found, ensuring all views are hidden.`
-        )
-        // 如果没有活动标签页，确保所有视图都隐藏
-        const tabsInWindow = await tabPresenterInstance.getWindowTabsData(windowId)
-        for (const tabData of tabsInWindow) {
-          const tabView = await tabPresenterInstance.getTab(tabData.id)
-          if (tabView && !tabView.webContents.isDestroyed()) {
-            tabView.setVisible(false) // 显式隐藏所有标签页视图
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`Error handling restore/show logic for window ${windowId}:`, error)
     }
   }
 
@@ -384,7 +373,7 @@ export class WindowPresenter implements IWindowPresenter {
     for (const window of Array.from(this.windows.values())) {
       if (!window.isDestroyed()) {
         // 向窗口主 WebContents 发送
-        window.webContents.send(channel, ...args)
+        this.sendToWebContentsTarget(window.webContents, channel, args)
 
         // 向窗口内所有标签页的 WebContents 发送 (异步执行)
         try {
@@ -394,7 +383,7 @@ export class WindowPresenter implements IWindowPresenter {
             for (const tabData of tabsData) {
               const tab = await tabPresenterInstance.getTab(tabData.id)
               if (tab && !tab.webContents.isDestroyed()) {
-                tab.webContents.send(channel, ...args)
+                this.sendToWebContentsTarget(tab.webContents, channel, args)
               }
             }
           }
@@ -403,6 +392,25 @@ export class WindowPresenter implements IWindowPresenter {
         }
       } else {
         console.warn(`Skipping sending message "${channel}" to destroyed window ${window.id}.`)
+      }
+    }
+
+    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+      try {
+        this.sendToWebContentsTarget(this.settingsWindow.webContents, channel, args)
+      } catch (error) {
+        console.error(`Error sending message "${channel}" to settings window:`, error)
+      }
+    }
+
+    if (this.floatingChatWindow && this.floatingChatWindow.isShowing()) {
+      const floatingWindow = this.floatingChatWindow.getWindow()
+      if (floatingWindow && !floatingWindow.isDestroyed()) {
+        try {
+          this.sendToWebContentsTarget(floatingWindow.webContents, channel, args)
+        } catch (error) {
+          console.error(`Error sending message "${channel}" to floating chat window:`, error)
+        }
       }
     }
   }
@@ -414,12 +422,51 @@ export class WindowPresenter implements IWindowPresenter {
    * @param args 消息参数。
    * @returns 如果消息已尝试发送，返回 true，否则返回 false。
    */
+  sendSettingsNavigation(windowId: number, navigation: SettingsNavigationPayload): boolean {
+    return this.sendToWindow(
+      windowId,
+      DEEPCHAT_EVENT_CHANNEL,
+      createDeepchatEventEnvelope('settings.navigateRequested', navigation)
+    )
+  }
+
+  sendSettingsCheckForUpdates(windowId: number): boolean {
+    return this.sendToWindow(
+      windowId,
+      DEEPCHAT_EVENT_CHANNEL,
+      createDeepchatEventEnvelope('settings.checkForUpdatesRequested', {})
+    )
+  }
+
   sendToWindow(windowId: number, channel: string, ...args: unknown[]): boolean {
-    console.log(`Sending message "${channel}" to window ${windowId}.`)
+    logger.info(`Sending message "${channel}" to window ${windowId}.`)
+
+    if (
+      this.settingsWindow &&
+      !this.settingsWindow.isDestroyed() &&
+      this.settingsWindow.id === windowId
+    ) {
+      if (this.tryNavigateSettingsWindowByUrl(channel, args)) {
+        return true
+      }
+
+      if (this.shouldQueueSettingsMessage(channel)) {
+        this.pendingSettingsMessages.push({ channel, args })
+        return true
+      }
+      try {
+        this.sendToWebContentsTarget(this.settingsWindow.webContents, channel, args)
+        return true
+      } catch (error) {
+        console.error(`Error sending message "${channel}" to settings window ${windowId}:`, error)
+        return false
+      }
+    }
+
     const window = this.windows.get(windowId)
     if (window && !window.isDestroyed()) {
       // 向窗口主 WebContents 发送
-      window.webContents.send(channel, ...args)
+      this.sendToWebContentsTarget(window.webContents, channel, args)
 
       // 向窗口内所有标签页的 WebContents 发送 (异步执行)
       const tabPresenterInstance = presenter.tabPresenter as TabPresenter
@@ -430,7 +477,7 @@ export class WindowPresenter implements IWindowPresenter {
             tabsData.forEach(async (tabData) => {
               const tab = await tabPresenterInstance.getTab(tabData.id)
               if (tab && !tab.webContents.isDestroyed()) {
-                tab.webContents.send(channel, ...args)
+                this.sendToWebContentsTarget(tab.webContents, channel, args)
               }
             })
           }
@@ -447,54 +494,204 @@ export class WindowPresenter implements IWindowPresenter {
     return false
   }
 
+  async sendToDefaultWindow(
+    channel: string,
+    switchToTarget: boolean = false,
+    ...args: unknown[]
+  ): Promise<boolean> {
+    const targetWindow = this.getFocusedWindow() || this.getAllWindows()[0]
+    if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+      return false
+    }
+
+    this.sendToWebContentsTarget(targetWindow.webContents, channel, args)
+
+    if (switchToTarget) {
+      targetWindow.show()
+      targetWindow.focus()
+      activateAppOnMac()
+    }
+
+    return true
+  }
+
+  async sendToWebContents(
+    webContentsId: number,
+    channel: string,
+    ...args: unknown[]
+  ): Promise<boolean> {
+    const target = electronWebContents.fromId(webContentsId)
+    if (!target || target.isDestroyed()) {
+      return false
+    }
+
+    this.sendToWebContentsTarget(target, channel, args)
+    return true
+  }
+
+  private sendToWebContentsTarget(target: WebContents, channel: string, args: unknown[]): void {
+    const typedEnvelope = this.createTypedEnvelopeForLegacyRendererChannel(channel, args)
+    if (typedEnvelope) {
+      target.send(DEEPCHAT_EVENT_CHANNEL, typedEnvelope)
+      return
+    }
+
+    target.send(channel, ...args)
+  }
+
+  private createTypedEnvelopeForLegacyRendererChannel(channel: string, args: unknown[]) {
+    const firstArg = args[0]
+
+    switch (channel) {
+      case DEEPLINK_EVENTS.START: {
+        const payload = firstArg && typeof firstArg === 'object' ? firstArg : {}
+        return createDeepchatEventEnvelope('appRuntime.startDeeplinkRequested', payload)
+      }
+      case DEEPLINK_EVENTS.MCP_INSTALL: {
+        const payload = firstArg && typeof firstArg === 'object' ? firstArg : {}
+        return createDeepchatEventEnvelope('appRuntime.mcpInstallRequested', payload)
+      }
+      case DEV_EVENTS.START_GUIDED_ONBOARDING:
+        return createDeepchatEventEnvelope('appRuntime.guidedOnboardingStartRequested', {})
+      case SHORTCUT_EVENTS.ZOOM_IN:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', { action: 'zoomIn' })
+      case SHORTCUT_EVENTS.ZOOM_OUT:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', { action: 'zoomOut' })
+      case SHORTCUT_EVENTS.ZOOM_RESUME:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', { action: 'zoomResume' })
+      case SHORTCUT_EVENTS.CREATE_NEW_CONVERSATION:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', {
+          action: 'createNewConversation'
+        })
+      case SHORTCUT_EVENTS.TOGGLE_SIDEBAR:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', {
+          action: 'toggleSidebar'
+        })
+      case SHORTCUT_EVENTS.TOGGLE_WORKSPACE:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', {
+          action: 'toggleWorkspace'
+        })
+      case SHORTCUT_EVENTS.TOGGLE_SPOTLIGHT:
+        return createDeepchatEventEnvelope('appRuntime.shortcutRequested', {
+          action: 'toggleSpotlight'
+        })
+      default:
+        return null
+    }
+  }
+
+  public async createAppWindow(options?: {
+    initialRoute?: string
+    x?: number
+    y?: number
+  }): Promise<number | null> {
+    return await this.createManagedWindow({
+      initialTab: {
+        url:
+          options?.initialRoute === 'chat' || !options?.initialRoute
+            ? 'local://chat'
+            : `local://${options.initialRoute}`
+      },
+      windowType: 'chat',
+      x: options?.x,
+      y: options?.y
+    })
+  }
+
+  public async createBrowserWindow(options?: { x?: number; y?: number }): Promise<number | null> {
+    return await this.createManagedWindow({
+      windowType: 'chat',
+      x: options?.x,
+      y: options?.y
+    })
+  }
+
+  async createShellWindow(options?: {
+    activateTabId?: number
+    initialTab?: {
+      url: string
+      icon?: string
+    }
+    windowType?: 'chat' | 'browser'
+    forMovedTab?: boolean
+    x?: number
+    y?: number
+  }): Promise<number | null> {
+    logger.info('Creating window via deprecated createShellWindow wrapper.')
+    return await this.createManagedWindow(options)
+  }
+
   /**
-   * 创建一个新的外壳窗口。
+   * 创建一个新的兼容窗口包装器。
    * @param options 窗口配置选项，包括初始标签页或激活现有标签页。
    * @returns 创建的窗口 ID，如果创建失败则返回 null。
    */
-  async createShellWindow(options?: {
+  private async createManagedWindow(options?: {
     activateTabId?: number // 要关联并激活的现有标签页 ID
     initialTab?: {
       // 窗口创建时要创建的新标签页选项
       url: string
       icon?: string
     }
+    windowType?: 'chat' | 'browser'
+    forMovedTab?: boolean // 用户拖拽标签页到新窗口时强制显示（即使是 browser 窗口）
     x?: number // 初始 X 坐标
     y?: number // 初始 Y 坐标
   }): Promise<number | null> {
-    console.log('Creating new shell window.')
-
     // 根据平台选择图标
     const iconFile = nativeImage.createFromPath(process.platform === 'win32' ? iconWin : icon)
 
+    // Standalone browser shell has been removed. All managed windows now use chat shell sizing.
+    const defaultWidth = 800
+    const defaultHeight = 620
+
     // 使用窗口状态管理器恢复位置和尺寸
-    const shellWindowState = windowStateManager({
-      defaultWidth: 800,
-      defaultHeight: 620
+    const managedWindowState = windowStateManager({
+      defaultWidth,
+      defaultHeight
     })
 
-    // 计算初始位置，确保 Y 坐标不为负数
-    const initialX = options?.x !== undefined ? options.x : shellWindowState.x
-    let initialY = options?.y !== undefined ? options?.y : shellWindowState.y
-    initialY = Math.max(0, initialY || 0)
+    // 计算初始位置，确保窗口完全在屏幕范围内
+    const initialX =
+      options?.x !== undefined
+        ? options.x
+        : this.validateWindowPosition(
+            managedWindowState.x,
+            managedWindowState.width,
+            managedWindowState.y,
+            managedWindowState.height
+          ).x
+    let initialY =
+      options?.y !== undefined
+        ? options?.y
+        : this.validateWindowPosition(
+            managedWindowState.x,
+            managedWindowState.width,
+            managedWindowState.y,
+            managedWindowState.height
+          ).y
 
-    const shellWindow = new BrowserWindow({
-      width: shellWindowState.width,
-      height: shellWindowState.height,
+    const appWindow = new BrowserWindow({
+      width: managedWindowState.width,
+      height: managedWindowState.height,
       x: initialX,
       y: initialY,
       show: false, // 先隐藏窗口，等待 ready-to-show 以避免白屏
       autoHideMenuBar: true, // 隐藏菜单栏
       icon: iconFile, // 设置图标
-      titleBarStyle: 'hiddenInset', // macOS 风格标题栏
+      titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined, // macOS 风格标题栏
       transparent: process.platform === 'darwin', // macOS 标题栏透明
       vibrancy: process.platform === 'darwin' ? 'under-window' : undefined, // macOS 磨砂效果
-      backgroundColor: '#00000000', // 透明背景色
+      visualEffectState: process.platform === 'darwin' ? 'followWindow' : undefined,
+      backgroundMaterial: process.platform === 'win32' ? 'mica' : undefined, // Windows 11 材质效果
+      backgroundColor: '#00ffffff', // 透明背景色
       maximizable: true, // 允许最大化
       frame: process.platform === 'darwin', // macOS 无边框
       hasShadow: true, // macOS 阴影
-      trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 12 } : undefined, // macOS 红绿灯按钮位置
+      trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 10 } : undefined, // macOS 红绿灯按钮位置
       webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
         preload: join(__dirname, '../preload/index.mjs'), // Preload 脚本路径
         sandbox: false, // 禁用沙箱，允许 preload 访问 Node.js API
         devTools: is.dev // 开发模式下启用 DevTools
@@ -502,60 +699,85 @@ export class WindowPresenter implements IWindowPresenter {
       roundedCorners: true // Windows 11 圆角
     })
 
-    if (!shellWindow) {
-      console.error('Failed to create shell window.')
+    if (!appWindow) {
+      console.error('Failed to create application window.')
       return null
     }
 
-    const windowId = shellWindow.id
-    this.windows.set(windowId, shellWindow) // 将窗口实例存入 Map
+    const windowId = appWindow.id
+    const appWebContentsId = appWindow.webContents.id
+    this.windows.set(windowId, appWindow) // 将窗口实例存入 Map
 
-    shellWindowState.manage(shellWindow) // 管理窗口状态
+    managedWindowState.manage(appWindow) // 管理窗口状态
+    this.setupManagedWindowOpenHandler(appWindow)
+    appWindow.webContents.on('destroyed', () => {
+      releasePresenterCallErrorStateForWebContents(appWebContentsId)
+    })
 
     // 应用内容保护设置
     const contentProtectionEnabled = this.configPresenter.getContentProtectionEnabled()
-    this.updateContentProtection(shellWindow, contentProtectionEnabled)
+    this.updateContentProtection(appWindow, contentProtectionEnabled)
+
+    // 开发模式下自动打开 DevTools
+    if (is.dev) {
+      appWindow.webContents.openDevTools()
+    }
 
     // --- 窗口事件监听 ---
 
     // 窗口准备就绪时显示
-    shellWindow.on('ready-to-show', () => {
-      console.log(`Window ${windowId} is ready to show.`)
-      if (!shellWindow.isDestroyed()) {
-        shellWindow.show() // 显示窗口避免白屏
-        eventBus.sendToMain(WINDOW_EVENTS.WINDOW_CREATED, windowId)
+    appWindow.on('ready-to-show', () => {
+      logger.info(`Window ${windowId} is ready to show.`)
+      if (!appWindow.isDestroyed()) {
+        appWindow.show()
+        appWindow.focus()
+        activateAppOnMac()
+        eventBus.sendToMain(WINDOW_EVENTS.WINDOW_CREATED, {
+          windowId,
+          isMainWindow: windowId === this.mainWindowId
+        })
+        this.publishWindowStateChanged(windowId)
       } else {
         console.warn(`Window ${windowId} was destroyed before ready-to-show.`)
       }
     })
 
     // 窗口获得焦点
-    shellWindow.on('focus', () => {
-      console.log(`Window ${windowId} gained focus.`)
+    appWindow.on('focus', () => {
+      logger.info(`Window ${windowId} gained focus.`)
       this.focusedWindowId = windowId
       eventBus.sendToMain(WINDOW_EVENTS.WINDOW_FOCUSED, windowId)
-      if (!shellWindow.isDestroyed()) {
-        shellWindow.webContents.send('window-focused', windowId)
+      this.publishWindowStateChanged(windowId)
+      if (!appWindow.isDestroyed()) {
+        appWindow.webContents.send(
+          DEEPCHAT_EVENT_CHANNEL,
+          createDeepchatEventEnvelope('appRuntime.windowFocused', { windowId })
+        )
       }
     })
 
     // 窗口失去焦点
-    shellWindow.on('blur', () => {
-      console.log(`Window ${windowId} lost focus.`)
+    appWindow.on('blur', () => {
+      logger.info(`Window ${windowId} lost focus.`)
       if (this.focusedWindowId === windowId) {
         this.focusedWindowId = null // 仅当失去焦点的窗口是当前记录的焦点窗口时才清空
       }
       eventBus.sendToMain(WINDOW_EVENTS.WINDOW_BLURRED, windowId)
-      if (!shellWindow.isDestroyed()) {
-        shellWindow.webContents.send('window-blurred', windowId)
+      this.publishWindowStateChanged(windowId)
+      if (!appWindow.isDestroyed()) {
+        appWindow.webContents.send(
+          DEEPCHAT_EVENT_CHANNEL,
+          createDeepchatEventEnvelope('appRuntime.windowBlurred', { windowId })
+        )
       }
     })
 
     // 窗口最大化
-    shellWindow.on('maximize', () => {
-      console.log(`Window ${windowId} maximized.`)
-      if (!shellWindow.isDestroyed()) {
+    appWindow.on('maximize', () => {
+      logger.info(`Window ${windowId} maximized.`)
+      if (!appWindow.isDestroyed()) {
         eventBus.sendToMain(WINDOW_EVENTS.WINDOW_MAXIMIZED, windowId)
+        this.publishWindowStateChanged(windowId)
         // 触发恢复逻辑更新标签页 bounds
         this.handleWindowRestore(windowId).catch((error) => {
           console.error(`Error handling restore logic after maximizing window ${windowId}:`, error)
@@ -564,10 +786,11 @@ export class WindowPresenter implements IWindowPresenter {
     })
 
     // 窗口取消最大化
-    shellWindow.on('unmaximize', () => {
-      console.log(`Window ${windowId} unmaximized.`)
-      if (!shellWindow.isDestroyed()) {
+    appWindow.on('unmaximize', () => {
+      logger.info(`Window ${windowId} unmaximized.`)
+      if (!appWindow.isDestroyed()) {
         eventBus.sendToMain(WINDOW_EVENTS.WINDOW_UNMAXIMIZED, windowId)
+        this.publishWindowStateChanged(windowId)
         // 触发恢复逻辑更新标签页 bounds
         this.handleWindowRestore(windowId).catch((error) => {
           console.error(
@@ -580,19 +803,20 @@ export class WindowPresenter implements IWindowPresenter {
 
     // 窗口从最小化恢复 (或通过 show 显式显示)
     const handleRestore = async () => {
-      console.log(`Window ${windowId} restored.`)
+      logger.info(`Window ${windowId} restored.`)
       this.handleWindowRestore(windowId).catch((error) => {
         console.error(`Error handling restore logic for window ${windowId}:`, error)
       })
       eventBus.sendToMain(WINDOW_EVENTS.WINDOW_RESTORED, windowId)
     }
-    shellWindow.on('restore', handleRestore)
+    appWindow.on('restore', handleRestore)
 
     // 窗口进入全屏
-    shellWindow.on('enter-full-screen', () => {
-      console.log(`Window ${windowId} entered fullscreen.`)
-      if (!shellWindow.isDestroyed()) {
+    appWindow.on('enter-full-screen', () => {
+      logger.info(`Window ${windowId} entered fullscreen.`)
+      if (!appWindow.isDestroyed()) {
         eventBus.sendToMain(WINDOW_EVENTS.WINDOW_ENTER_FULL_SCREEN, windowId)
+        this.publishWindowStateChanged(windowId)
         // 触发恢复逻辑更新标签页 bounds
         this.handleWindowRestore(windowId).catch((error) => {
           console.error(
@@ -604,10 +828,11 @@ export class WindowPresenter implements IWindowPresenter {
     })
 
     // 窗口退出全屏
-    shellWindow.on('leave-full-screen', () => {
-      console.log(`Window ${windowId} left fullscreen.`)
-      if (!shellWindow.isDestroyed()) {
+    appWindow.on('leave-full-screen', () => {
+      logger.info(`Window ${windowId} left fullscreen.`)
+      if (!appWindow.isDestroyed()) {
         eventBus.sendToMain(WINDOW_EVENTS.WINDOW_LEAVE_FULL_SCREEN, windowId)
+        this.publishWindowStateChanged(windowId)
         // 触发恢复逻辑更新标签页 bounds
         this.handleWindowRestore(windowId).catch((error) => {
           console.error(
@@ -619,91 +844,84 @@ export class WindowPresenter implements IWindowPresenter {
     })
 
     // 窗口尺寸改变，通知 TabPresenter 更新所有视图 bounds
-    shellWindow.on('resize', () => {
+    appWindow.on('resize', () => {
       eventBus.sendToMain(WINDOW_EVENTS.WINDOW_RESIZE, windowId)
     })
 
     // 'close' 事件：用户尝试关闭窗口 (点击关闭按钮等)。
     // 此处理程序决定是隐藏窗口还是允许其关闭/销毁。
-    shellWindow.on('close', (event) => {
-      console.log(
+    appWindow.on('close', (event) => {
+      logger.info(
         `Window ${windowId} close event. isQuitting: ${this.isQuitting}, Platform: ${process.platform}.`
       )
 
       // 如果应用不是正在退出过程中...
       if (!this.isQuitting) {
         // 实现隐藏到托盘逻辑：
-        // 在非 macOS 平台，或在 macOS 上且未配置关闭时退出 (或还有其他窗口)，阻止默认关闭行为，仅隐藏窗口。
-        const isLastWindow = this.windows.size === 1
-        // 检查 macOS 配置：关闭时是否退出应用
-        const shouldQuitOnClose =
-          process.platform === 'darwin' ? this.configPresenter.getCloseToQuit() : false
-
-        // 是否应该阻止默认关闭并隐藏：
-        // - 非 macOS 平台总是阻止 (实现隐藏到托盘)。
-        // - macOS 平台：如果不是最后一个窗口，或虽然是最后一个窗口但配置为不退出时，阻止。
-        const shouldPreventDefault =
-          process.platform !== 'darwin' ||
-          (process.platform === 'darwin' && (!isLastWindow || !shouldQuitOnClose))
+        // 1. 如果是其他窗口，直接关闭
+        // 2. 如果是主窗口，判断配置是否允许关闭
+        // shouldPreventDefault: true隐藏, false关闭
+        const shouldQuitOnClose = this.configPresenter.getCloseToQuit()
+        const shouldPreventDefault = windowId === this.mainWindowId && !shouldQuitOnClose
 
         if (shouldPreventDefault) {
-          console.log(`Window ${windowId}: Preventing default close behavior, hiding instead.`)
+          logger.info(`Window ${windowId}: Preventing default close behavior, hiding instead.`)
           event.preventDefault() // 阻止默认窗口关闭行为
 
           // 处理全屏窗口隐藏时的黑屏问题 (同 hide 方法)
-          if (shellWindow.isFullScreen()) {
-            console.log(
+          if (appWindow.isFullScreen()) {
+            logger.info(
               `Window ${windowId} is fullscreen, exiting fullscreen before hiding (close event).`
             )
-            shellWindow.once('leave-full-screen', () => {
-              console.log(`Window ${windowId} left fullscreen, proceeding with hide (close event).`)
-              if (!shellWindow.isDestroyed()) {
-                shellWindow.hide()
+            appWindow.once('leave-full-screen', () => {
+              logger.info(`Window ${windowId} left fullscreen, proceeding with hide (close event).`)
+              if (!appWindow.isDestroyed()) {
+                appWindow.hide()
               } else {
                 console.warn(
                   `Window ${windowId} was destroyed after leaving fullscreen, cannot hide (close event).`
                 )
               }
             })
-            shellWindow.setFullScreen(false)
+            appWindow.setFullScreen(false)
           } else {
-            console.log(`Window ${windowId} is not fullscreen, hiding directly (close event).`)
-            shellWindow.hide()
+            logger.info(`Window ${windowId} is not fullscreen, hiding directly (close event).`)
+            appWindow.hide()
           }
         } else {
-          // 如果是 macOS，且是最后一个窗口，且配置为关闭时退出，或者 isQuitting 为 true
           // 允许默认关闭行为。这将触发 'closed' 事件。
-          console.log(
+          logger.info(
             `Window ${windowId}: Allowing default close behavior (app is quitting or macOS last window configured to quit).`
           )
         }
       } else {
         // 如果 isQuitting 为 true，表示应用正在主动退出，允许窗口正常关闭
-        console.log(`Window ${windowId}: isQuitting is true, allowing default close behavior.`)
+        logger.info(`Window ${windowId}: isQuitting is true, allowing default close behavior.`)
       }
     })
 
     // 'closed' 事件：窗口实际关闭并销毁时触发 (在 'close' 事件之后，如果未阻止默认行为)
-    shellWindow.on('closed', () => {
-      console.log(
+    appWindow.on('closed', () => {
+      logger.info(
         `Window ${windowId} closed event triggered. isQuitting: ${this.isQuitting}, Map size BEFORE delete: ${this.windows.size}`
       )
       const windowIdBeingClosed = windowId // 捕获 ID
 
       // 移除 restore 事件监听器，防止内存泄漏 (其他事件的清理根据需要添加)
-      shellWindow.removeListener('restore', handleRestore)
+      appWindow.removeListener('restore', handleRestore)
 
       this.windows.delete(windowIdBeingClosed) // 从 Map 中移除
-      shellWindowState.unmanage() // 停止管理窗口状态
+      managedWindowState.unmanage() // 停止管理窗口状态
       eventBus.sendToMain(WINDOW_EVENTS.WINDOW_CLOSED, windowIdBeingClosed)
-      console.log(
+      this.publishWindowStateChanged(windowIdBeingClosed, false)
+      logger.info(
         `Window ${windowIdBeingClosed} closed event handled. Map size AFTER delete: ${this.windows.size}`
       )
 
       // 如果在非 macOS 平台，且关闭的是最后一个窗口，如果应用并非正在退出，则发出警告。
       // 在隐藏到托盘逻辑下，'closed' 事件仅应在 isQuitting 为 true 时触发。
       if (this.windows.size === 0 && process.platform !== 'darwin') {
-        console.log(`Last window closed on non-macOS platform.`)
+        logger.info(`Last window closed on non-macOS platform.`)
         if (!this.isQuitting) {
           console.warn(
             `Warning: Last window on non-macOS platform triggered closed event, but app is not marked as quitting. This might indicate window destruction instead of hiding.`
@@ -713,83 +931,32 @@ export class WindowPresenter implements IWindowPresenter {
     })
 
     // --- 加载 Renderer HTML 文件 ---
+    // Standalone browser renderer has been removed. All windows load the main chat shell.
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      console.log(
-        `Loading renderer URL in dev mode: ${process.env['ELECTRON_RENDERER_URL']}/shell/index.html`
+      logger.info(
+        `Loading main renderer URL in dev mode: ${process.env['ELECTRON_RENDERER_URL']}#/chat`
       )
-      shellWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/shell/index.html')
+      appWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '#/chat')
     } else {
-      // 生产模式下加载打包后的 HTML 文件
-      console.log(
-        `Loading packaged renderer file: ${join(__dirname, '../renderer/shell/index.html')}`
+      logger.info(
+        `Loading packaged main renderer file: ${join(__dirname, '../renderer/index.html')}`
       )
-      shellWindow.loadFile(join(__dirname, '../renderer/shell/index.html'))
-    }
-
-    // --- 处理初始标签页创建或激活 ---
-
-    // 如果提供了 options?.initialTab，等待窗口加载完成，然后创建新标签页
-    if (options?.initialTab) {
-      shellWindow.webContents.once('did-finish-load', async () => {
-        console.log(`Window ${windowId} did-finish-load, checking for initial tab creation.`)
-        if (shellWindow.isDestroyed()) {
-          console.warn(
-            `Window ${windowId} was destroyed before did-finish-load callback, cannot create initial tab.`
-          )
-          return
-        }
-        shellWindow.focus() // 窗口加载完成后聚焦
-        try {
-          console.log(`Creating initial tab, URL: ${options.initialTab!.url}`)
-          const tabId = await (presenter.tabPresenter as TabPresenter).createTab(
-            windowId,
-            options.initialTab!.url,
-            { active: true }
-          )
-          if (tabId === null) {
-            console.error(`Failed to create initial tab in new window ${windowId}.`)
-          } else {
-            console.log(`Created initial tab ${tabId} in window ${windowId}.`)
-          }
-        } catch (error) {
-          console.error(`Error creating initial tab:`, error)
-        }
+      appWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+        hash: '/chat'
       })
     }
 
-    // 如果提供了 activateTabId，表示一个现有标签页 (WebContentsView) 将被 TabPresenter 关联到此新窗口
-    // 激活逻辑 (设置可见性、bounds) 在 tabPresenter.attachTab / switchTab 中处理
-    if (options?.activateTabId !== undefined) {
-      // 等待窗口加载完成，然后尝试激活指定标签页
-      shellWindow.webContents.once('did-finish-load', async () => {
-        console.log(
-          `Window ${windowId} did-finish-load, attempting to activate tab ${options.activateTabId}.`
-        )
-        if (shellWindow.isDestroyed()) {
-          console.warn(
-            `Window ${windowId} was destroyed before did-finish-load callback, cannot activate tab ${options.activateTabId}.`
-          )
-          return
-        }
-        try {
-          // 切换到指定标签页，这将处理视图的关联和显示
-          await (presenter.tabPresenter as TabPresenter).switchTab(options.activateTabId as number)
-          console.log(`Requested to switch to tab ${options.activateTabId}.`)
-        } catch (error) {
-          console.error(
-            `Failed to activate tab ${options.activateTabId} after window ${windowId} load:`,
-            error
-          )
-        }
-      })
-    }
-
-    // 开发模式下可选开启 DevTools
+    // DevTools 不再自动打开，需要手动通过菜单或快捷键打开
+    // 开发环境直接自动开启，方便排查
     if (is.dev) {
-      // shellWindow.webContents.openDevTools({ mode: 'detach' });
+      appWindow.webContents.openDevTools({ mode: 'detach' })
     }
 
-    console.log(`Shell window ${windowId} created successfully.`)
+    logger.info(`Window ${windowId} created successfully.`)
+
+    if (this.mainWindowId == null) {
+      this.mainWindowId = windowId // 如果这是第一个窗口，设置为主窗口 ID
+    }
     return windowId // 返回新创建窗口的 ID
   }
 
@@ -803,7 +970,7 @@ export class WindowPresenter implements IWindowPresenter {
       console.warn(`Attempted to update content protection settings on a destroyed window.`)
       return
     }
-    console.log(`Updating content protection for window ${window.id}: ${enabled}`)
+    logger.info(`Updating content protection for window ${window.id}: ${enabled}`)
 
     // setContentProtection 阻止截图/屏幕录制
     window.setContentProtection(enabled)
@@ -830,12 +997,19 @@ export class WindowPresenter implements IWindowPresenter {
 
     if (electronFocusedWindow) {
       const windowId = electronFocusedWindow.id
+      logger.info(this.windows)
       const ourWindow = this.windows.get(windowId)
 
       // 验证 Electron 报告的窗口是否在我们管理范围内且有效
       if (ourWindow && !ourWindow.isDestroyed()) {
         this.focusedWindowId = windowId // 更新内部记录
         return ourWindow
+      } else if (this.settingsWindow) {
+        if (windowId === this.settingsWindow.id) {
+          return this.settingsWindow
+        } else {
+          return
+        }
       } else {
         // Electron 报告的窗口不在 Map 中或已销毁
         console.warn(
@@ -885,14 +1059,14 @@ export class WindowPresenter implements IWindowPresenter {
    * @returns 如果事件已发送到有效活动标签页，返回 true，否则返回 false。
    */
   async sendToActiveTab(windowId: number, channel: string, ...args: unknown[]): Promise<boolean> {
-    console.log(`Sending event "${channel}" to active tab of window ${windowId}.`)
+    logger.info(`Sending event "${channel}" to active tab of window ${windowId}.`)
     const tabPresenterInstance = presenter.tabPresenter as TabPresenter
     const activeTabId = await tabPresenterInstance.getActiveTabId(windowId)
     if (activeTabId) {
       const tab = await tabPresenterInstance.getTab(activeTabId)
       if (tab && !tab.webContents.isDestroyed()) {
-        tab.webContents.send(channel, ...args)
-        console.log(`  - Event sent to tab ${activeTabId}.`)
+        this.sendToWebContentsTarget(tab.webContents, channel, args)
+        logger.info(`  - Event sent to tab ${activeTabId}.`)
         return true
       } else {
         console.warn(
@@ -900,6 +1074,13 @@ export class WindowPresenter implements IWindowPresenter {
         )
       }
     } else {
+      // Fallback: chat windows have no tabs, send directly to BrowserWindow webContents
+      const targetWindow = BrowserWindow.fromId(windowId)
+      if (targetWindow && !targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+        this.sendToWebContentsTarget(targetWindow.webContents, channel, args)
+        logger.info(`  - No active tab, sent event directly to window ${windowId} webContents.`)
+        return true
+      }
       console.warn(`No active tab found in window ${windowId}, cannot send event "${channel}".`)
     }
     return false
@@ -913,12 +1094,12 @@ export class WindowPresenter implements IWindowPresenter {
    * @param args 消息参数。
    * @returns 如果消息已发送，返回 true，否则返回 false。
    */
-  async sendTodefaultTab(
+  async sendToDefaultTab(
     channel: string,
     switchToTarget: boolean = false,
     ...args: unknown[]
   ): Promise<boolean> {
-    console.log(`Sending message "${channel}" to default tab. Switch to target: ${switchToTarget}.`)
+    logger.info(`Sending message "${channel}" to default tab. Switch to target: ${switchToTarget}.`)
     try {
       // 优先使用当前获得焦点的窗口
       let targetWindow = this.getFocusedWindow()
@@ -926,7 +1107,7 @@ export class WindowPresenter implements IWindowPresenter {
 
       if (targetWindow) {
         windowId = targetWindow.id
-        console.log(`  - Using focused window ${windowId}`)
+        logger.info(`  - Using focused window ${windowId}`)
       } else {
         // 如果没有焦点窗口，使用第一个有效窗口
         const windows = this.getAllWindows()
@@ -936,14 +1117,30 @@ export class WindowPresenter implements IWindowPresenter {
         }
         targetWindow = windows[0]
         windowId = targetWindow.id
-        console.log(`  - No focused window, using first window ${windowId}`)
+        logger.info(`  - No focused window, using first window ${windowId}`)
       }
 
       // 获取目标窗口的所有标签页
       const tabPresenterInstance = presenter.tabPresenter as TabPresenter
       const tabsData = await tabPresenterInstance.getWindowTabsData(windowId)
       if (tabsData.length === 0) {
-        console.warn(`Window ${windowId} has no tabs, cannot send message to default tab.`)
+        // Fallback: chat windows have no tabs, send directly to BrowserWindow webContents
+        if (
+          targetWindow &&
+          !targetWindow.isDestroyed() &&
+          !targetWindow.webContents.isDestroyed()
+        ) {
+          this.sendToWebContentsTarget(targetWindow.webContents, channel, args)
+          logger.info(
+            `  - Window ${windowId} has no tabs, sent message directly to window webContents.`
+          )
+          if (switchToTarget) {
+            targetWindow.show()
+            targetWindow.focus()
+          }
+          return true
+        }
+        console.warn(`Window ${windowId} has no tabs and window is unavailable.`)
         return false
       }
 
@@ -953,24 +1150,25 @@ export class WindowPresenter implements IWindowPresenter {
 
       if (targetTab && !targetTab.webContents.isDestroyed()) {
         // 向目标标签页发送消息
-        targetTab.webContents.send(channel, ...args)
-        console.log(`  - Message sent to tab ${targetTabData.id} in window ${windowId}.`)
+        this.sendToWebContentsTarget(targetTab.webContents, channel, args)
+        logger.info(`  - Message sent to tab ${targetTabData.id} in window ${windowId}.`)
 
         // 如果需要，切换到目标窗口和标签页
         if (switchToTarget) {
           try {
             // 激活目标窗口
             if (targetWindow && !targetWindow.isDestroyed()) {
-              console.log(`  - Switching to window ${windowId}`)
+              logger.info(`  - Switching to window ${windowId}`)
               targetWindow.show() // 确保窗口可见
               targetWindow.focus() // 将窗口带到前台
             }
 
             // 如果目标标签页不是活动标签页，则切换
             if (!targetTabData.isActive) {
-              console.log(`  - Switching to tab ${targetTabData.id}`)
+              logger.info(`  - Switching to tab ${targetTabData.id}`)
               await tabPresenterInstance.switchTab(targetTabData.id)
             }
+            // switchTab 已经会调用 bringViewToFront 来设置焦点，无需额外调用
           } catch (error) {
             console.error('Error switching to target window/tab:', error)
             // 继续，因为消息发送成功
@@ -988,5 +1186,545 @@ export class WindowPresenter implements IWindowPresenter {
       console.error('Error sending message to default tab:', error)
       return false // 过程中发生错误
     }
+  }
+
+  public async createFloatingChatWindow(): Promise<void> {
+    if (this.floatingChatWindow) {
+      logger.info('FloatingChatWindow already exists')
+      return
+    }
+
+    try {
+      this.floatingChatWindow = new FloatingChatWindow()
+      await this.floatingChatWindow.create()
+      logger.info('FloatingChatWindow created successfully')
+    } catch (error) {
+      console.error('Failed to create FloatingChatWindow:', error)
+      this.floatingChatWindow = null
+      throw error
+    }
+  }
+
+  public async showFloatingChatWindow(floatingButtonPosition?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }): Promise<void> {
+    if (!this.floatingChatWindow) {
+      await this.createFloatingChatWindow()
+    }
+
+    if (this.floatingChatWindow) {
+      this.floatingChatWindow.show(floatingButtonPosition)
+      logger.info('FloatingChatWindow shown')
+    }
+  }
+
+  public hideFloatingChatWindow(): void {
+    if (this.floatingChatWindow) {
+      this.floatingChatWindow.hide()
+      logger.info('FloatingChatWindow hidden')
+    }
+  }
+
+  public async toggleFloatingChatWindow(floatingButtonPosition?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }): Promise<void> {
+    if (!this.floatingChatWindow) {
+      await this.createFloatingChatWindow()
+    }
+
+    if (this.floatingChatWindow) {
+      this.floatingChatWindow.toggle(floatingButtonPosition)
+      logger.info('FloatingChatWindow toggled')
+    }
+  }
+
+  public destroyFloatingChatWindow(): void {
+    if (this.floatingChatWindow) {
+      this.floatingChatWindow.destroy()
+      this.floatingChatWindow = null
+      logger.info('FloatingChatWindow destroyed')
+    }
+  }
+
+  public isFloatingChatWindowVisible(): boolean {
+    return this.floatingChatWindow?.isShowing() || false
+  }
+
+  public getFloatingChatWindow(): FloatingChatWindow | null {
+    return this.floatingChatWindow
+  }
+
+  /**
+   * Create or show Settings Window (singleton pattern)
+   */
+  public async createSettingsWindow(
+    navigation?: SettingsNavigationPayload
+  ): Promise<number | null> {
+    const settingsStartupStart = Date.now()
+    console.info('[Startup][Settings][Main] createSettingsWindow start')
+    // If settings window already exists, just show and focus it
+    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+      logger.info('Settings window already exists, showing and focusing.')
+      this.settingsWindow.show()
+      this.settingsWindow.focus()
+      activateAppOnMac()
+      if (navigation) {
+        if (this.settingsWindowReady) {
+          this.sendSettingsNavigation(this.settingsWindow.id, navigation)
+        } else {
+          this.pendingSettingsMessages.push({
+            channel: DEEPCHAT_EVENT_CHANNEL,
+            args: [createDeepchatEventEnvelope('settings.navigateRequested', navigation)]
+          })
+
+          const targetUrl = this.getSettingsWindowTargetUrl(navigation)
+          logger.info(`Settings window is not ready, reloading to target URL: ${targetUrl}`)
+          console.info('[Startup][Settings][Main] loadURL start', targetUrl)
+          await this.settingsWindow.loadURL(targetUrl)
+          console.info(
+            `[Startup][Settings][Main] loadURL end windowId=${this.settingsWindow.id} elapsed=${Date.now() - settingsStartupStart}ms`
+          )
+        }
+      }
+      return this.settingsWindow.id
+    }
+
+    logger.info('Creating new settings window.')
+
+    // Choose icon based on platform
+    const iconFile = nativeImage.createFromPath(process.platform === 'win32' ? iconWin : icon)
+
+    // Initialize window state manager to remember position and size
+    const settingsWindowState = windowStateManager({
+      file: 'settings-window-state.json',
+      defaultWidth: 1300,
+      defaultHeight: 800
+    })
+
+    // Create Settings Window with state persistence
+    const settingsWindow = new BrowserWindow({
+      x: settingsWindowState.x,
+      y: settingsWindowState.y,
+      width: settingsWindowState.width,
+      height: settingsWindowState.height,
+      minWidth: 900,
+      minHeight: 640,
+      show: false,
+      autoHideMenuBar: true,
+      fullscreenable: false,
+
+      icon: iconFile,
+      title: 'DeepChat - Settings',
+      titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+      transparent: process.platform === 'darwin',
+      vibrancy: process.platform === 'darwin' ? 'under-window' : undefined,
+      visualEffectState: process.platform === 'darwin' ? 'followWindow' : undefined,
+      backgroundMaterial: process.platform === 'win32' ? 'mica' : undefined,
+      backgroundColor: '#00ffffff',
+      maximizable: true,
+      minimizable: true,
+      frame: process.platform === 'darwin',
+      hasShadow: true,
+      trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 10 } : undefined,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: join(__dirname, '../preload/index.mjs'),
+        sandbox: false,
+        devTools: is.dev
+      },
+      roundedCorners: true
+    })
+
+    if (!settingsWindow) {
+      console.error('Failed to create settings window.')
+      return null
+    }
+
+    this.settingsWindow = settingsWindow
+    this.resetSettingsWindowState()
+    this.startupWorkloadCoordinator?.createRun('settings')
+    const windowId = settingsWindow.id
+    const settingsWebContentsId = settingsWindow.webContents.id
+
+    if (navigation) {
+      this.pendingSettingsMessages.push({
+        channel: DEEPCHAT_EVENT_CHANNEL,
+        args: [createDeepchatEventEnvelope('settings.navigateRequested', navigation)]
+      })
+    }
+
+    // Manage window state to track position and size changes
+    settingsWindowState.manage(settingsWindow)
+    settingsWindow.webContents.on('destroyed', () => {
+      releasePresenterCallErrorStateForWebContents(settingsWebContentsId)
+    })
+
+    // Ensure links with target="_blank" open in the user's default browser
+    settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
+      openExternalUrl(url, 'settings window')
+      return { action: 'deny' }
+    })
+
+    // Apply content protection settings
+    const contentProtectionEnabled = this.configPresenter.getContentProtectionEnabled()
+    this.updateContentProtection(settingsWindow, contentProtectionEnabled)
+
+    // Window event listeners
+    settingsWindow.on('ready-to-show', () => {
+      console.info(
+        `[Startup][Settings][Main] ready-to-show windowId=${windowId} elapsed=${Date.now() - settingsStartupStart}ms`
+      )
+      if (!settingsWindow.isDestroyed()) {
+        settingsWindow.show()
+      }
+    })
+
+    settingsWindow.webContents.on('did-start-navigation', (details) => {
+      this.handleSettingsWindowNavigationStart(
+        windowId,
+        details.isMainFrame,
+        details.isSameDocument
+      )
+    })
+
+    settingsWindow.on('closed', () => {
+      logger.info(`Settings window ${windowId} closed.`)
+      // Unmanage window state when window is closed
+      settingsWindowState.unmanage()
+      this.startupWorkloadCoordinator?.cancelTarget('settings')
+      this.settingsWindow = null
+      this.resetSettingsWindowState(true)
+    })
+
+    // Load settings renderer HTML
+    const targetUrl = this.getSettingsWindowTargetUrl(navigation)
+    logger.info(`Loading settings renderer URL: ${targetUrl}`)
+    console.info('[Startup][Settings][Main] loadURL start', targetUrl)
+    await settingsWindow.loadURL(targetUrl)
+
+    console.info(
+      `[Startup][Settings][Main] loadURL end windowId=${windowId} elapsed=${Date.now() - settingsStartupStart}ms`
+    )
+
+    // Open DevTools in development mode
+    if (is.dev) {
+      settingsWindow.webContents.openDevTools({ mode: 'detach' })
+    }
+
+    logger.info(`Settings window ${windowId} created successfully.`)
+    return windowId
+  }
+
+  /**
+   * Open or focus Settings Window (replaces openOrFocusSettingsTab)
+   */
+  public async openOrFocusSettingsWindow(): Promise<void> {
+    await this.createSettingsWindow()
+  }
+
+  public getSettingsWindowId(): number | null {
+    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+      return this.settingsWindow.id
+    }
+    return null
+  }
+
+  public focusMainWindow(): boolean {
+    if (this.mainWindowId == null) {
+      return false
+    }
+
+    const mainWindow = BrowserWindow.fromId(this.mainWindowId)
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+      return false
+    }
+
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore()
+    }
+
+    mainWindow.show()
+    mainWindow.focus()
+    activateAppOnMac()
+    return true
+  }
+
+  public setPendingSettingsProviderInstall(preview: ProviderInstallPreview): void {
+    this.pendingSettingsProviderInstalls.push(this.clonePendingSettingsProviderInstall(preview))
+  }
+
+  public consumePendingSettingsProviderInstall(): ProviderInstallPreview | null {
+    const preview = this.pendingSettingsProviderInstalls.shift()
+    if (!preview) {
+      return null
+    }
+
+    return this.clonePendingSettingsProviderInstall(preview)
+  }
+
+  /**
+   * Close Settings Window if it exists
+   */
+  public closeSettingsWindow(): void {
+    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+      logger.info('Closing settings window.')
+      const windowId = this.settingsWindow.id
+      this.windows.delete(windowId)
+      this.settingsWindow.close()
+    }
+  }
+
+  /**
+   * Check if Settings Window is open
+   */
+  public isSettingsWindowOpen(): boolean {
+    return this.settingsWindow !== null && !this.settingsWindow.isDestroyed()
+  }
+
+  private shouldQueueSettingsMessage(channel: string): boolean {
+    return (
+      !this.settingsWindowReady &&
+      (channel.startsWith('settings:') ||
+        channel === DEEPCHAT_EVENT_CHANNEL ||
+        channel === DEEPLINK_EVENTS.MCP_INSTALL)
+    )
+  }
+
+  public notifySettingsReady(senderWebContentsId: number): void {
+    if (
+      !this.settingsWindow ||
+      this.settingsWindow.isDestroyed() ||
+      this.settingsWindow.webContents.isDestroyed() ||
+      this.settingsWindow.webContents.id !== senderWebContentsId
+    ) {
+      return
+    }
+
+    this.settingsWindowReady = true
+    console.info(
+      `[Startup][Settings][Main] window.notifySettingsReady windowId=${this.settingsWindow.id}`
+    )
+    this.startupWorkloadCoordinator?.replayTarget('settings')
+    this.flushPendingSettingsMessages()
+  }
+
+  private handleSettingsWindowNavigationStart(
+    windowId: number,
+    isMainFrame: boolean,
+    isSameDocument: boolean
+  ): void {
+    if (!isMainFrame || isSameDocument || this.settingsWindow?.id !== windowId) {
+      return
+    }
+
+    this.settingsWindowReady = false
+  }
+
+  private tryNavigateSettingsWindowByUrl(channel: string, args: unknown[]): boolean {
+    if (
+      (channel !== SETTINGS_EVENTS.NAVIGATE && channel !== DEEPCHAT_EVENT_CHANNEL) ||
+      !this.settingsWindow ||
+      this.settingsWindow.isDestroyed() ||
+      this.settingsWindow.webContents.isDestroyed()
+    ) {
+      return false
+    }
+
+    const navigation =
+      channel === DEEPCHAT_EVENT_CHANNEL
+        ? this.toSettingsNavigationPayloadFromDeepchatEnvelope(args[0])
+        : this.toSettingsNavigationPayload(args[0])
+    if (!navigation || navigation.routeName !== 'settings-provider') {
+      return false
+    }
+
+    const targetUrl = this.getSettingsWindowTargetUrl(navigation)
+    const currentUrl = this.settingsWindow.webContents.getURL()
+
+    if (currentUrl === targetUrl && this.settingsWindowReady) {
+      return false
+    }
+
+    this.pendingSettingsMessages.push({
+      channel,
+      args:
+        channel === DEEPCHAT_EVENT_CHANNEL
+          ? [createDeepchatEventEnvelope('settings.navigateRequested', navigation)]
+          : [navigation]
+    })
+    logger.info(`Reloading settings window to target URL: ${targetUrl}`)
+    console.info('[Startup][Settings][Main] loadURL start', targetUrl)
+    void this.settingsWindow.webContents
+      .loadURL(targetUrl)
+      .then(() => {
+        if (!this.settingsWindow || this.settingsWindow.isDestroyed()) {
+          return
+        }
+
+        console.info(
+          `[Startup][Settings][Main] loadURL end windowId=${this.settingsWindow.id} target=${targetUrl}`
+        )
+      })
+      .catch((error) => {
+        console.error(`Failed to reload settings window for navigation: ${targetUrl}`, error)
+      })
+    return true
+  }
+
+  private toSettingsNavigationPayloadFromDeepchatEnvelope(
+    raw: unknown
+  ): SettingsNavigationPayload | null {
+    if (!raw || typeof raw !== 'object') {
+      return null
+    }
+
+    const envelope = raw as { name?: unknown; payload?: unknown }
+    if (envelope.name !== 'settings.navigateRequested') {
+      return null
+    }
+
+    return this.toSettingsNavigationPayload(envelope.payload)
+  }
+
+  private toSettingsNavigationPayload(raw: unknown): SettingsNavigationPayload | null {
+    if (!raw || typeof raw !== 'object') {
+      return null
+    }
+
+    const candidate = raw as {
+      routeName?: unknown
+      params?: unknown
+      section?: unknown
+    }
+
+    if (typeof candidate.routeName !== 'string') {
+      return null
+    }
+
+    const params =
+      candidate.params && typeof candidate.params === 'object'
+        ? Object.entries(candidate.params as Record<string, unknown>).reduce<
+            Record<string, string>
+          >((acc, [key, value]) => {
+            if (typeof value === 'string' && value.trim().length > 0) {
+              acc[key] = value
+            }
+            return acc
+          }, {})
+        : undefined
+
+    return {
+      routeName: candidate.routeName as SettingsNavigationPayload['routeName'],
+      params: params && Object.keys(params).length > 0 ? params : undefined,
+      section: typeof candidate.section === 'string' ? candidate.section : undefined
+    }
+  }
+
+  private getSettingsWindowTargetUrl(navigation?: SettingsNavigationPayload): string {
+    const initialNavigationPath = navigation
+      ? resolveSettingsNavigationPath(
+          navigation.routeName,
+          navigation.params,
+          process.platform,
+          process.arch
+        )
+      : null
+
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      const settingsUrl = new URL('/settings/index.html', process.env['ELECTRON_RENDERER_URL'])
+      if (initialNavigationPath) {
+        settingsUrl.hash = initialNavigationPath
+      }
+      return settingsUrl.toString()
+    }
+
+    const packagedSettingsUrl = pathToFileURL(
+      join(__dirname, '../renderer/settings/index.html')
+    ).toString()
+    return initialNavigationPath
+      ? `${packagedSettingsUrl}#${initialNavigationPath}`
+      : packagedSettingsUrl
+  }
+
+  private flushPendingSettingsMessages(): void {
+    if (
+      !this.settingsWindow ||
+      this.settingsWindow.isDestroyed() ||
+      this.settingsWindow.webContents.isDestroyed() ||
+      !this.settingsWindowReady ||
+      this.pendingSettingsMessages.length === 0
+    ) {
+      return
+    }
+
+    const pending = [...this.pendingSettingsMessages]
+    this.pendingSettingsMessages = []
+    pending.forEach(({ channel, args }) => {
+      try {
+        if (this.settingsWindow?.webContents) {
+          this.sendToWebContentsTarget(this.settingsWindow.webContents, channel, args)
+        }
+      } catch (error) {
+        console.error(`Error flushing settings message "${channel}":`, error)
+      }
+    })
+  }
+
+  private resetSettingsWindowState(clearQueue = false): void {
+    this.settingsWindowReady = false
+    if (clearQueue) {
+      this.pendingSettingsMessages = []
+      this.clearPendingSettingsProviderInstalls()
+    }
+  }
+
+  private clonePendingSettingsProviderInstall(
+    preview: ProviderInstallPreview
+  ): ProviderInstallPreview {
+    return { ...preview }
+  }
+
+  private clearPendingSettingsProviderInstalls(): void {
+    this.pendingSettingsProviderInstalls.forEach((preview) => {
+      preview.apiKey = ''
+    })
+    this.pendingSettingsProviderInstalls = []
+  }
+
+  public isApplicationQuitting(): boolean {
+    return this.isQuitting
+  }
+
+  public setApplicationQuitting(isQuitting: boolean): void {
+    this.isQuitting = isQuitting
+  }
+
+  private validateWindowPosition(
+    x: number,
+    width: number,
+    y: number,
+    height: number
+  ): { x: number; y: number } {
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const { workArea } = primaryDisplay
+    const isXValid = x >= workArea.x && x + width <= workArea.x + workArea.width
+    const isYValid = y >= workArea.y && y + height <= workArea.y + workArea.height
+    if (!isXValid || !isYValid) {
+      logger.info(
+        `Window position out of bounds (x: ${x}, y: ${y}, width: ${width}, height: ${height}), centering window`
+      )
+      return {
+        x: workArea.x + Math.max(0, (workArea.width - width) / 2),
+        y: workArea.y + Math.max(0, (workArea.height - height) / 2)
+      }
+    }
+    return { x, y }
   }
 }

@@ -1,33 +1,35 @@
 import { defineStore } from 'pinia'
 import { onMounted, ref } from 'vue'
 import type { ShortcutKeySetting } from '@shared/presenter'
-import { usePresenter } from '@/composables/usePresenter'
+import { createShortcutClient } from '@api/ShortcutClient'
+import { createConfigClient } from '../../api/ConfigClient'
 
 export const useShortcutKeyStore = defineStore('shortcutKey', () => {
-  const configP = usePresenter('configPresenter')
-  const shortcutKeyP = usePresenter('shortcutPresenter')
+  const configClient = createConfigClient()
+  const shortcutClient = createShortcutClient()
   const shortcutKeys = ref<ShortcutKeySetting>()
 
   const loadShortcutKeys = async () => {
-    const customShortcutKeys = await configP.getShortcutKey()
+    const customShortcutKeys = await configClient.getShortcutKey()
     shortcutKeys.value = customShortcutKeys
   }
 
   const saveShortcutKeys = async () => {
-    await configP.setShortcutKey(shortcutKeys.value)
+    if (!shortcutKeys.value) return
+    await configClient.setShortcutKey(shortcutKeys.value)
   }
 
   const resetShortcutKeys = async () => {
-    await configP.resetShortcutKeys()
+    await configClient.resetShortcutKeys()
     await loadShortcutKeys()
   }
 
   const enableShortcutKey = async () => {
-    shortcutKeyP.registerShortcuts()
+    await shortcutClient.registerShortcuts()
   }
 
   const disableShortcutKey = async () => {
-    shortcutKeyP.destroy()
+    await shortcutClient.destroy()
   }
 
   onMounted(async () => {

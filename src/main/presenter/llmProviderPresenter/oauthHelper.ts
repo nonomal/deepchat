@@ -1,5 +1,6 @@
+import logger from '@shared/logger'
 import { BrowserWindow } from 'electron'
-import { eventBus, SendTarget } from '@/eventbus'
+import { eventBus } from '@/eventbus'
 import { CONFIG_EVENTS } from '@/events'
 
 export interface OAuthConfig {
@@ -13,7 +14,7 @@ export interface OAuthConfig {
 export class OAuthHelper {
   private authWindow: BrowserWindow | null = null
 
-  constructor(private config: OAuthConfig) { }
+  constructor(private config: OAuthConfig) {}
 
   /**
    * 开始OAuth登录流程
@@ -21,7 +22,7 @@ export class OAuthHelper {
   async startLogin(): Promise<string> {
     return new Promise((resolve, reject) => {
       // 发送登录开始事件
-      eventBus.send(CONFIG_EVENTS.OAUTH_LOGIN_START, SendTarget.ALL_WINDOWS)
+      eventBus.sendToMain(CONFIG_EVENTS.OAUTH_LOGIN_START)
 
       // 创建授权窗口
       this.authWindow = new BrowserWindow({
@@ -99,11 +100,11 @@ export class OAuthHelper {
 
         if (error) {
           console.error('OAuth error:', error)
-          eventBus.send(CONFIG_EVENTS.OAUTH_LOGIN_ERROR, SendTarget.ALL_WINDOWS, error)
+          eventBus.sendToMain(CONFIG_EVENTS.OAUTH_LOGIN_ERROR, error)
           reject(new Error(`OAuth授权失败: ${error}`))
         } else if (code) {
-          console.log('OAuth success, received code:', code)
-          eventBus.send(CONFIG_EVENTS.OAUTH_LOGIN_SUCCESS, SendTarget.ALL_WINDOWS, code)
+          logger.info('OAuth success, received authorization code')
+          eventBus.sendToMain(CONFIG_EVENTS.OAUTH_LOGIN_SUCCESS, code)
           resolve(code)
         } else {
           reject(new Error('未收到授权码'))

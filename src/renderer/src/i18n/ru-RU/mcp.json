@@ -39,7 +39,12 @@
     "invalidJson": "Неверный формат JSON",
     "inputHint": "Пожалуйста, введите параметры в формате JSON",
     "required": "Обязательно",
-    "noDescription": "Нет описания"
+    "noDescription": "Нет описания",
+    "allowedValues": "Разрешенные значения",
+    "arrayItemValues": "Значения элемента массива",
+    "acpManagedHint": "Инструменты MCP управляются «Агентом ACP».",
+    "acpServersNone": "Агент не настроен с помощью MCP.",
+    "acpServersSelected": "Выбрано {count} MCP"
   },
   "addServer": "Добавить сервер",
   "addServerDialog": {
@@ -55,7 +60,7 @@
   "confirmRemoveServer": "Вы уверены, что хотите удалить сервер {name}? Эта операция не может быть отменена.",
   "default": "по умолчанию",
   "deleteServer": "Удалить сервер",
-  "description": "Управление и настройка серверов и инструментов MCP (Model Control Protocol)",
+  "description": "Управление и настройка серверов и инструментов MCP (Model Context Protocol)",
   "editServer": "Отредактируйте сервер",
   "editServerDialog": {
     "description": "Редактировать конфигурацию сервера MCP",
@@ -79,7 +84,9 @@
   "serverForm": {
     "add": "добавить в",
     "args": "параметр",
-    "argsPlaceholder": "Введите параметры, разделенные пространствами",
+    "argsPlaceholder": "Введите по одному параметру в строке",
+    "addArg": "Добавить параметр",
+    "argPlaceholder": "Введите значение параметра",
     "argsRequired": "Параметры не могут быть пустыми",
     "autoApprove": "Автоматическое авторизация",
     "autoApproveAll": "все",
@@ -152,17 +159,9 @@
       "desc": "Включить DeepChat манипулировать локальными файлами",
       "name": "Файловая система"
     },
-    "imageServer": {
-      "desc": "После открытия любая модель в DeepChat может понять картину и генерировать картинку.",
-      "name": "Служба картин"
-    },
     "braveSearch": {
       "desc": "Храбрый поиск API https://brave.com/search/api/",
       "name": "Смелый поиск"
-    },
-    "powerpack": {
-      "desc": "Предоставьте расширенные возможности, такие как временные запросы, получение веб -информации и безопасное выполнение кода для любой большой модели, чтобы у модели были более мощные и точные возможности получения информации.",
-      "name": "Усовершенствование инструментов"
     },
     "difyKnowledge": {
       "name": "Поиск в базе знаний Dify",
@@ -191,6 +190,14 @@
     "deepchat-inmemory/conversation-search-server": {
       "name": "Поиск истории разговоров",
       "desc": "Встроенная служба поиска истории разговоров DeepChat, может искать записи исторических разговоров и содержимое сообщений"
+    },
+    "builtinKnowledge": {
+      "desc": "Встроенная служба поиска базы знаний DeepChat, которая может искать содержание встроенной базы знаний DeepChat",
+      "name": "Встроенный поиск базы знаний"
+    },
+    "deepchat/apple-server": {
+      "desc": "Пусть модель работает системные функции MacOS, такие как календарь, контакты, электронные письма, карты, записки, напоминания и другие системы",
+      "name": "MacOS System Assistant"
     }
   },
   "prompts": {
@@ -198,6 +205,7 @@
     "noDescription": "Пока нет описания",
     "selectPrompt": "Показано здесь",
     "parameters": "Быстрые параметры",
+    "required": "Обязательно",
     "input": "Входные параметры",
     "runningPrompt": "Подсказка получает",
     "executeButton": "Нажмите, чтобы получить",
@@ -227,12 +235,75 @@
     "resetToDefaultFailed": "Не удалось сбросить настройки серверов по умолчанию",
     "toggleServerFailed": "Не удалось переключить статус сервера {serverName}",
     "loadToolsFailed": "Не удалось загрузить инструменты",
+    "loadClientsFailed": "Не удалось загрузить MCP-клиенты",
     "loadPromptsFailed": "Не удалось загрузить промпты",
     "loadResourcesFailed": "Не удалось загрузить ресурсы",
     "callToolFailed": "Не удалось вызвать инструмент {toolName}",
     "toolCallError": "Ошибка вызова инструмента: {error}",
     "mcpDisabled": "MCP отключен",
     "getPromptFailed": "Не удалось получить промпт",
-    "readResourceFailed": "Не удалось прочитать ресурс"
+    "readResourceFailed": "Не удалось прочитать ресурс",
+    "promptNotFound": "Промпт '{name}' не найден",
+    "emptyPromptContent": "Приглашение '{name}' пусто.",
+    "missingParameters": "Отсутствующие параметры: {params}",
+    "invalidParameters": "Неверные параметры: {params}"
+  },
+  "market": {
+    "apiKeyPlaceholder": "Введите ключ McProuter API",
+    "apiKeyRequiredDesc": "Пожалуйста, заполните клавишу McProuter API сначала перед установкой",
+    "apiKeyRequiredTitle": "Требует ключа API",
+    "browseBuiltin": "Просмотрите встроенный рынок MCP",
+    "builtinTitle": "MCP Market",
+    "empty": "Пока нет услуг",
+    "install": "Установить",
+    "installFailed": "Установка не удалась",
+    "installSuccess": "Установка успешно",
+    "installed": "Установлен",
+    "keyGuide": "Получите ключ",
+    "keyHelpEnd": "После подачи заявки на ключ API заполните поле ввода выше",
+    "keyHelpText": "Пожалуйста, приезжайте первым",
+    "loadMore": "Загружать больше",
+    "noMore": "Больше не надо",
+    "poweredBy": "Оборудован от McProuter",
+    "pullDownToLoad": "Продолжайте падать, чтобы загружать больше"
+  },
+  "sampling": {
+    "approve": "соглашаться",
+    "confirming": "Подтверждаем...",
+    "confirm": "Отправить ответ модели",
+    "contentType": {
+      "audio": "Аудио",
+      "image": "картина",
+      "text": "текст"
+    },
+    "description": "Просмотреть контекст, предоставленный MCP-сервером, и выбрать, генерировать ли ответ.",
+    "imageAlt": "Изображение {индекс}",
+    "messagesTitle": "Контекст диалога",
+    "noModels": "Не включена подходящая модель.\nВключите применимую модель в «Настройках», чтобы продолжить.",
+    "noVisionModels": "Не включена ни одна модель с визуальными функциями.\nВключите визуальную модель в «Настройках», чтобы продолжить.",
+    "preference": {
+      "cost": "Приоритет стоимости",
+      "hints": "Подсказка модели",
+      "intelligence": "Приоритет разведки",
+      "speed": "Приоритет скорости"
+    },
+    "preferencesTitle": "Предпочтения модели",
+    "reject": "Отказать",
+    "selectedModelLabel": "Ответить с использованием {model} ({provider})",
+    "systemPrompt": "Системное уведомление",
+    "title": "Выборочный запрос с сервера {server}",
+    "unknownHint": "Неименованная подсказка",
+    "unknownMime": "Неизвестный тип MIME",
+    "unknownServer": "Неизвестный сервер",
+    "unsupportedMessage": "Данный тип контента не поддерживается.",
+    "visionWarning": "Выбранная модель не поддерживает визуальный ввод.  \nПожалуйста, сначала выберите модель с визуальной функцией, прежде чем продолжить.",
+    "autoApproveIn": "Автоматически одобрять использование модели {model} через {секунды} сек.",
+    "autoApproving": "Образец запроса MCP от {server}",
+    "maxTokensInfo": "Максимальная длина ответа: токенов {maxTokens}.",
+    "respondWith": "Модель ответа:",
+    "reviewRequest": "проверьте детали",
+    "selectModel": "Выберите модель",
+    "sendResponse": "Отправить ответ",
+    "sessionActive": "Сессия активна – запрос будет одобрен автоматически"
   }
 }

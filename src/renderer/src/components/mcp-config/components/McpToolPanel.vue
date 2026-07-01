@@ -1,24 +1,25 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { Icon } from '@iconify/vue'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
+import { Button } from '@shadcn/components/ui/button'
+import { Badge } from '@shadcn/components/ui/badge'
+import { ScrollArea } from '@shadcn/components/ui/scroll-area'
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
   SheetDescription
-} from '@/components/ui/sheet'
+} from '@shadcn/components/ui/sheet'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue
-} from '@/components/ui/select'
+} from '@shadcn/components/ui/select'
 import { useMcpStore } from '@/stores/mcp'
+import { useMediaQuery } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import McpJsonViewer from './McpJsonViewer.vue'
 import type { MCPToolDefinition } from '@shared/presenter'
@@ -50,6 +51,14 @@ const isParametersExpanded = ref(false)
 // 计算属性：获取当前服务器的工具
 const serverTools = computed(() => {
   return mcpStore.tools.filter((tool) => tool.server.name === props.serverName)
+})
+
+// 屏幕断点：lg 及以上
+const isLgScreen = useMediaQuery('(min-width: 1024px)')
+
+// 顶部下拉是否显示：小屏时显示；或大屏但左侧列表不可用（无工具）时显示
+const showTopSelector = computed(() => {
+  return !isLgScreen.value || serverTools.value.length === 0
 })
 
 watch(open, (newOpen) => {
@@ -132,9 +141,16 @@ const toolParametersDescription = computed(() => {
   return Object.entries(properties).map(([key, prop]) => ({
     name: key,
     description: prop.description || '',
-    type: prop.type || 'unknown',
+    type: prop.enum
+      ? 'enum'
+      : prop.type === 'array' && prop.items?.enum
+        ? 'array[enum]'
+        : prop.type || 'unknown',
+    originalType: prop.type || 'unknown',
     required: required.includes(key),
-    annotations: prop.annotations
+    annotations: prop.annotations,
+    enum: prop.enum || null,
+    items: prop.items || null
   }))
 })
 
@@ -150,7 +166,7 @@ const selectTool = (tool: MCPToolDefinition) => {
       side="right"
       class="w-4/5 min-w-[80vw] max-w-[80vw] p-0 bg-white dark:bg-black h-screen flex flex-col gap-0"
     >
-      <SheetHeader class="px-4 py-3 border-b bg-card flex-shrink-0">
+      <SheetHeader class="px-4 py-3 border-b bg-card shrink-0 window-no-drag-region">
         <SheetTitle class="flex items-center space-x-2">
           <Icon icon="lucide:wrench" class="h-5 w-5 text-primary" />
           <span>{{ t('mcp.tools.title') }} - {{ serverName }}</span>
@@ -161,8 +177,8 @@ const selectTool = (tool: MCPToolDefinition) => {
       </SheetHeader>
 
       <div class="flex flex-col flex-1 overflow-hidden">
-        <!-- 小屏幕：工具选择下拉菜单 -->
-        <div class="flex-shrink-0 px-4 py-4 lg:hidden">
+        <!-- 顶部工具选择下拉菜单：小屏显示；或大屏但左侧列表不可用时显示 -->
+        <div v-if="showTopSelector" class="shrink-0 px-4 py-4">
           <Select v-model="selectedToolName">
             <SelectTrigger class="w-full">
               <SelectValue :placeholder="t('mcp.tools.selectToolToDebug')" />
@@ -185,8 +201,8 @@ const selectTool = (tool: MCPToolDefinition) => {
         <!-- 大屏幕：左右分列布局 -->
         <div class="flex-1 flex overflow-hidden min-h-0">
           <!-- 左侧工具列表 (仅大屏幕显示) -->
-          <div class="hidden lg:flex lg:w-1/3 lg:border-r lg:flex-col">
-            <div class="p-4 border-b flex-shrink-0">
+          <div v-if="!showTopSelector" class="flex w-1/3 border-r flex-col">
+            <div class="p-4 border-b shrink-0">
               <h3 class="text-sm font-medium text-foreground">{{ t('mcp.tools.toolList') }}</h3>
             </div>
             <ScrollArea class="flex-1 min-h-0">
@@ -204,7 +220,7 @@ const selectTool = (tool: MCPToolDefinition) => {
                   <div class="flex items-start space-x-2 w-full">
                     <Icon
                       icon="lucide:function-square"
-                      class="h-4 w-4 text-primary mt-0.5 flex-shrink-0"
+                      class="h-4 w-4 text-primary mt-0.5 shrink-0"
                     />
                     <div class="flex-1 min-w-0">
                       <div class="font-medium text-sm truncate">{{ tool.function.name }}</div>
@@ -280,13 +296,70 @@ const selectTool = (tool: MCPToolDefinition) => {
                           >
                             {{ t('mcp.tools.required') }}
                           </Badge>
-                          <Badge variant="outline" class="text-xs px-1 py-0">{{
-                            param.type
-                          }}</Badge>
+                          <Badge
+                            :variant="
+                              param.type === 'enum' || param.type === 'array[enum]'
+                                ? 'default'
+                                : 'outline'
+                            "
+                            class="text-xs px-1 py-0"
+                            :class="
+                              param.type === 'enum' || param.type === 'array[enum]'
+                                ? 'bg-blue-500 text-white'
+                                : ''
+                            "
+                          >
+                            {{
+                              param.type === 'enum'
+                                ? `enum(${param.originalType})`
+                                : param.type === 'array[enum]'
+                                  ? `array[enum(${param.items?.type || 'string'})]`
+                                  : param.type
+                            }}
+                          </Badge>
                         </div>
                         <p v-if="param.description" class="text-xs text-muted-foreground">
                           {{ param.description }}
                         </p>
+                        <!-- 显示枚举值 -->
+                        <div v-if="param.enum && param.enum.length > 0" class="mt-1">
+                          <p class="text-xs font-medium text-foreground mb-1">
+                            {{ t('mcp.tools.allowedValues') }}:
+                          </p>
+                          <div class="flex flex-wrap gap-1">
+                            <Badge
+                              v-for="enumValue in param.enum"
+                              :key="enumValue"
+                              variant="secondary"
+                              class="text-xs px-1.5 py-0.5 font-mono"
+                            >
+                              {{ enumValue }}
+                            </Badge>
+                          </div>
+                        </div>
+                        <!-- 显示数组元素类型的枚举值 -->
+                        <div
+                          v-if="
+                            param.type === 'array' &&
+                            param.items?.enum &&
+                            param.items.enum.length > 0
+                          "
+                          class="mt-1"
+                        >
+                          <p class="text-xs font-medium text-foreground mb-1">
+                            {{ t('mcp.tools.arrayItemValues') }}:
+                          </p>
+                          <div class="flex flex-wrap gap-1">
+                            <Badge
+                              v-for="enumValue in param.items.enum"
+                              :key="enumValue"
+                              variant="secondary"
+                              class="text-xs px-1.5 py-0.5 font-mono"
+                            >
+                              {{ enumValue }}
+                            </Badge>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -376,6 +449,7 @@ const selectTool = (tool: MCPToolDefinition) => {
 <style scoped>
 .line-clamp-2 {
   display: -webkit-box;
+  line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;

@@ -1,36 +1,45 @@
 <template>
   <Dialog :open="true" @update:open="$emit('close')">
-    <DialogContent class="sm:max-w-[425px] z-[100]">
+    <DialogContent class="sm:max-w-[425px] z-100">
       <DialogHeader>
-        <DialogTitle>{{ promptName }} 参数设置</DialogTitle>
-        <DialogDescription> 请填写以下参数，带 * 的为必填项 </DialogDescription>
+        <DialogTitle>{{
+          t('components.promptParamsDialog.title', { name: promptName })
+        }}</DialogTitle>
+        <DialogDescription>
+          {{ t('components.promptParamsDialog.description') }}
+        </DialogDescription>
       </DialogHeader>
 
-      <div class="grid gap-4 py-4">
-        <div v-for="(param, index) in params" :key="param.name" class="space-y-2">
-          <div class="flex items-center gap-2">
-            <Label :for="param.name" class="text-sm font-medium">
-              {{ param.name }}
-              <span v-if="param.required" class="text-red-500">*</span>
-            </Label>
-            <span class="text-xs text-muted-foreground">{{ param.description }}</span>
+      <ScrollArea class="h-96 w-full pr-3">
+        <div class="grid gap-4 py-4">
+          <div v-for="(param, index) in params" :key="param.name" class="space-y-2">
+            <div class="flex items-center gap-2">
+              <Label :for="param.name" class="text-sm font-medium">
+                {{ param.name }}
+                <span v-if="param.required" class="text-red-500">*</span>
+              </Label>
+              <span class="text-xs text-muted-foreground">{{ param.description }}</span>
+            </div>
+            <Input
+              :id="param.name"
+              v-model="paramValues[param.name]"
+              :class="{ 'border-red-500': errors[param.name] }"
+              @keydown.enter="handleEnter(index)"
+              @keydown.esc="$emit('close')"
+            />
+            <p v-if="errors[param.name]" class="text-xs text-red-500">
+              {{ errors[param.name] }}
+            </p>
           </div>
-          <Input
-            :id="param.name"
-            v-model="paramValues[param.name]"
-            :class="{ 'border-red-500': errors[param.name] }"
-            @keydown.enter="handleEnter(index)"
-            @keydown.esc="$emit('close')"
-          />
-          <p v-if="errors[param.name]" class="text-xs text-red-500">
-            {{ errors[param.name] }}
-          </p>
         </div>
-      </div>
-
+      </ScrollArea>
       <DialogFooter>
-        <Button variant="outline" @click="$emit('close')"> 取消 </Button>
-        <Button :disabled="hasErrors" @click="handleSubmit"> 确认 </Button>
+        <Button variant="outline" @click="$emit('close')">
+          {{ t('common.cancel') }}
+        </Button>
+        <Button :disabled="hasErrors" @click="handleSubmit">
+          {{ t('common.confirm') }}
+        </Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
@@ -38,6 +47,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   Dialog,
   DialogContent,
@@ -45,10 +55,11 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter
-} from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+} from '@shadcn/components/ui/dialog'
+import { Button } from '@shadcn/components/ui/button'
+import { Input } from '@shadcn/components/ui/input'
+import { Label } from '@shadcn/components/ui/label'
+import { ScrollArea } from '@shadcn/components/ui/scroll-area'
 
 interface PromptParam {
   name: string
@@ -69,6 +80,8 @@ const emit = defineEmits<{
 const paramValues = ref<Record<string, string>>({})
 const errors = ref<Record<string, string>>({})
 
+const { t } = useI18n()
+
 // 初始化参数值
 onMounted(() => {
   props.params.forEach((param) => {
@@ -83,7 +96,7 @@ const validateParams = () => {
 
   props.params.forEach((param) => {
     if (param.required && !paramValues.value[param.name]) {
-      errors.value[param.name] = '此参数为必填项'
+      errors.value[param.name] = t('components.promptParamsDialog.required')
       hasError = true
     }
   })
@@ -111,9 +124,9 @@ const hasErrors = computed(() => {
   if (Object.keys(errors.value).length > 0) {
     return true
   }
-  
+
   // 检查是否有必填参数未填写
-  return props.params.some(param => {
+  return props.params.some((param) => {
     if (param.required) {
       const value = paramValues.value[param.name]
       return !value || value.trim() === ''

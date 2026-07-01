@@ -1,4 +1,6 @@
 import { FileMetaData } from './presenter'
+import type { ToolCallImagePreview } from './types/core/mcp'
+import type { AgentPlanDisplayItem, AgentPlanTerminalReason } from './types/agent-plan'
 
 export type Message = {
   id: string
@@ -13,7 +15,7 @@ export type Message = {
   model_provider: string
   status: 'sent' | 'pending' | 'error'
   error: string
-  // user只有prompt_tokens，其他数值可以留为0
+  // user messages only have prompt_tokens, other values can be left as 0
   usage: {
     context_usage: number
     tokens_per_second: number
@@ -86,14 +88,26 @@ export type AssistantMessageBlock = {
     | 'content'
     | 'search'
     | 'reasoning_content'
+    | 'plan'
     | 'error'
     | 'tool_call'
     | 'action'
     | 'image'
+    | 'audio'
     | 'artifact-thinking'
+  id?: string
   content?: string
-  extra?: Record<string, string | number | object[] | boolean>
-  status: 'success' | 'loading' | 'cancel' | 'error' | 'reading' | 'optimizing' | 'pending'
+  extra?: AssistantMessageExtra
+  status:
+    | 'success'
+    | 'loading'
+    | 'cancel'
+    | 'error'
+    | 'reading'
+    | 'optimizing'
+    | 'pending'
+    | 'granted'
+    | 'denied'
   timestamp: number
   artifact?: {
     identifier: string
@@ -112,11 +126,16 @@ export type AssistantMessageBlock = {
     name?: string
     params?: string
     response?: string
+    imagePreviews?: ToolCallImagePreview[]
     server_name?: string
     server_icons?: string
     server_description?: string
   }
-  action_type?: 'tool_call_permission' | 'maximum_tool_calls_reached'
+  action_type?:
+    | 'tool_call_permission'
+    | 'maximum_tool_calls_reached'
+    | 'rate_limit'
+    | 'question_request'
   image_data?: {
     data: string
     mimeType: string
@@ -126,7 +145,59 @@ export type AssistantMessageBlock = {
     end: number
   }
 }
-// 搜索相关的消息块类型
+
+export type PermissionType = 'read' | 'write' | 'all' | 'command'
+
+export type CommandRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+
+export type CommandInfo = {
+  command: string
+  riskLevel: CommandRiskLevel
+  suggestion: string
+  signature?: string
+  baseCommand?: string
+}
+
+export type AssistantMessageExtra = Record<string, string | number | object[] | boolean> & {
+  needsUserAction?: boolean
+  permissionType?: PermissionType
+  grantedPermissions?: PermissionType
+  toolName?: string
+  serverName?: string
+  providerId?: string
+  permissionRequestId?: string
+  permissionRequest?: string
+  commandInfo?: string
+  rememberable?: boolean
+  questionHeader?: string
+  questionText?: string
+  questionOptions?:
+    | Array<{
+        label: string
+        description?: string
+      }>
+    | string
+  questionMultiple?: boolean
+  questionCustom?: boolean
+  questionResolution?: 'asked' | 'replied' | 'rejected'
+  answerText?: string
+  answerMessageId?: string
+  skillDraftAction?: string
+  skillDraftId?: string
+  skillDraftName?: string
+  skillDraftPreview?: string
+  skillDraftStatus?: string
+  skillDraftError?: string
+  internalTool?: boolean
+  plan_entries?: AgentPlanDisplayItem[]
+  plan_explanation?: string
+  plan_revision?: number
+  plan_updated_at?: string
+  plan_terminal_reason?: AgentPlanTerminalReason
+  subagentProgress?: string
+  subagentFinal?: string
+}
+// Search-related message block types
 export type SearchBlock = {
   type: 'search'
   status: 'loading' | 'success' | 'error'
@@ -138,6 +209,7 @@ export type SearchBlock = {
       url: string
       content?: string
     }>
+    searchId?: string
   }
 }
 

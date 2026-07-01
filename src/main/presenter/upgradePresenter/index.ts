@@ -1,17 +1,39 @@
+import logger from '@shared/logger'
 import { app, shell } from 'electron'
-import { IUpgradePresenter, UpdateStatus, UpdateProgress } from '@shared/presenter'
-import { eventBus, SendTarget } from '@/eventbus'
+import {
+  IUpgradePresenter,
+  UpdateStatus,
+  UpdateProgress,
+  IConfigPresenter
+} from '@shared/presenter'
+import { eventBus } from '@/eventbus'
 import { UPDATE_EVENTS, WINDOW_EVENTS } from '@/events'
+import { presenter } from '@/presenter'
+import { publishDeepchatEvent } from '@/routes/publishDeepchatEvent'
 import electronUpdater from 'electron-updater'
-import axios from 'axios'
+import type { UpdateInfo } from 'electron-updater'
 import { compare } from 'compare-versions'
 import fs from 'fs'
 import path from 'path'
-import { nanoid } from 'nanoid'
 
 const { autoUpdater } = electronUpdater
 
-const randomId = nanoid()
+const GITHUB_OWNER = 'ThinkInAIXYZ'
+const GITHUB_REPO = 'deepchat'
+const OFFICIAL_DOWNLOAD_URL = 'https://deepchatai.cn/#/download'
+const UPDATE_CHANNEL_STABLE = 'stable'
+const UPDATE_CHANNEL_BETA = 'beta'
+const PRERELEASE_VERSION_REGEX = /-(?:alpha|beta|rc|canary)(?:[.-]\d+)?$/i
+
+const isPrereleaseVersion = (version: string): boolean => {
+  return PRERELEASE_VERSION_REGEX.test(version)
+}
+
+type ReleaseNoteItem = {
+  version?: string | null
+  note?: string | null
+}
+
 // 版本信息接口
 interface VersionInfo {
   version: string
@@ -19,28 +41,44 @@ interface VersionInfo {
   releaseNotes: string
   githubUrl: string
   downloadUrl: string
+  isMock?: boolean
 }
 
-// 获取平台和架构信息
-const getPlatformInfo = () => {
-  const platform = process.platform
-  const arch = process.arch
-  let platformString = ''
+const normalizeUpdateChannel = (channel?: string): 'stable' | 'beta' => {
+  return channel === UPDATE_CHANNEL_BETA ? UPDATE_CHANNEL_BETA : UPDATE_CHANNEL_STABLE
+}
 
-  if (platform === 'win32') {
-    platformString = arch === 'arm64' ? 'winarm' : 'winx64'
-  } else if (platform === 'darwin') {
-    platformString = arch === 'arm64' ? 'macarm' : 'macx64'
-  } else if (platform === 'linux') {
-    platformString = arch === 'arm64' ? 'linuxarm' : 'linuxx64'
+const formatTagVersion = (version: string): string => {
+  return version.startsWith('v') ? version : `v${version}`
+}
+
+const buildReleaseUrl = (version: string): string => {
+  return `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${formatTagVersion(version)}`
+}
+
+const formatReleaseNotes = (notes?: string | ReleaseNoteItem[] | null): string => {
+  if (!notes) return ''
+  if (typeof notes === 'string') return notes
+  if (!Array.isArray(notes)) return String(notes)
+  const blocks = notes
+    .map((note) => {
+      const title = note.version ? `## ${note.version}` : ''
+      const body = note.note ?? ''
+      return [title, body].filter(Boolean).join('\n')
+    })
+    .filter((entry) => entry.length > 0)
+  return blocks.join('\n\n')
+}
+
+const toVersionInfo = (info: UpdateInfo): VersionInfo => {
+  const releaseUrl = buildReleaseUrl(info.version)
+  return {
+    version: info.version,
+    releaseDate: info.releaseDate || '',
+    releaseNotes: formatReleaseNotes(info.releaseNotes),
+    githubUrl: releaseUrl,
+    downloadUrl: OFFICIAL_DOWNLOAD_URL
   }
-
-  return platformString
-}
-
-// 获取版本检查的基础URL
-const getVersionCheckBaseUrl = () => {
-  return 'https://cdn.deepchatai.cn/upgrade'
 }
 
 // 获取自动更新状态文件路径
@@ -54,13 +92,48 @@ export class UpgradePresenter implements IUpgradePresenter {
   private _progress: UpdateProgress | null = null
   private _error: string | null = null
   private _versionInfo: VersionInfo | null = null
-  private _baseUrl: string
   private _lastCheckTime: number = 0 // 上次检查更新的时间戳
+  private _lastCheckType?: string
   private _updateMarkerPath: string
   private _previousUpdateFailed: boolean = false // 标记上次更新是否失败
+  private _configPresenter: IConfigPresenter // 配置presenter
+  private _isUpdating: boolean = false // Flag to track if update installation is in progress
+  private _isMockUpdate: boolean = false
 
-  constructor() {
-    this._baseUrl = getVersionCheckBaseUrl()
+  private emitStatusChanged(payload: {
+    status: UpdateStatus | null
+    error?: string | null
+    info?: VersionInfo | null
+    type?: string
+  }): void {
+    publishDeepchatEvent('upgrade.status.changed', {
+      ...payload,
+      version: Date.now()
+    })
+  }
+
+  private emitProgress(progress: UpdateProgress): void {
+    publishDeepchatEvent('upgrade.progress', {
+      ...progress,
+      version: Date.now()
+    })
+  }
+
+  private emitWillRestart(): void {
+    publishDeepchatEvent('upgrade.willRestart', {
+      version: Date.now()
+    })
+  }
+
+  private emitError(error: string): void {
+    publishDeepchatEvent('upgrade.error', {
+      error,
+      version: Date.now()
+    })
+  }
+
+  constructor(configPresenter: IConfigPresenter) {
+    this._configPresenter = configPresenter
     this._updateMarkerPath = getUpdateMarkerFilePath()
 
     // 配置自动更新
@@ -70,11 +143,11 @@ export class UpgradePresenter implements IUpgradePresenter {
 
     // 错误处理
     autoUpdater.on('error', (e) => {
-      console.log('自动更新失败', e.message)
+      logger.info('自动更新失败', e.message)
       this._lock = false
       this._status = 'error'
       this._error = e.message
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
+      this.emitStatusChanged({
         status: this._status,
         error: this._error,
         info: this._versionInfo
@@ -83,27 +156,87 @@ export class UpgradePresenter implements IUpgradePresenter {
 
     // 检查更新状态
     autoUpdater.on('checking-for-update', () => {
-      console.log('正在检查更新')
+      logger.info('正在检查更新')
     })
 
     // 无可用更新
     autoUpdater.on('update-not-available', () => {
-      console.log('无可用更新')
+      logger.info('无可用更新')
       this._lock = false
       this._status = 'not-available'
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, { status: this._status })
+      this._error = null
+      this._progress = null
+      this._versionInfo = null
+      this.emitStatusChanged({
+        status: this._status,
+        type: this._lastCheckType
+      })
     })
 
     // 有可用更新
     autoUpdater.on('update-available', (info) => {
-      console.log('检测到新版本', info)
-      this._status = 'available'
+      logger.info('检测到新版本', info)
+      this._lock = false
 
-      // 重要：这里不再使用info中的信息更新this._versionInfo
-      // 而是确保使用之前从versionUrl获取的原始信息
-      console.log('使用已保存的版本信息:', this._versionInfo)
-      // 检测到更新后自动开始下载
-      this.startDownloadUpdate()
+      // 版本号兜底保护：electron-updater 在 channel 错配时可能把当前 beta 安装包"更新"成更旧的正式版。
+      // 严格按 semver 判定——只要远端版本 <= 当前版本就拒绝。这里不再单独以"channel 是否同源"为拒绝条件，
+      // 以免误伤"beta → 同版本号 stable 正式发布"这类合法的渠道收敛升级。
+      const currentVersion = app.getVersion()
+      const remoteVersion = info?.version || ''
+
+      let isDowngradeOrSame = false
+      try {
+        if (!remoteVersion) {
+          isDowngradeOrSame = true
+        } else if (compare(remoteVersion, currentVersion, '<=')) {
+          isDowngradeOrSame = true
+        }
+      } catch (e) {
+        console.warn('版本号对比失败，忽略此次更新提示', currentVersion, remoteVersion, e)
+        isDowngradeOrSame = true
+      }
+
+      if (isDowngradeOrSame) {
+        logger.info('忽略降级或同版本的更新提示', {
+          current: currentVersion,
+          remote: remoteVersion
+        })
+        this._status = 'not-available'
+        this._error = null
+        this._progress = null
+        this._versionInfo = null
+        this.emitStatusChanged({
+          status: this._status,
+          type: this._lastCheckType
+        })
+        return
+      }
+
+      this._versionInfo = toVersionInfo(info)
+      this._error = null
+      this._progress = null
+
+      if (this._previousUpdateFailed) {
+        logger.info('上次更新失败，本次不进行自动更新，改为手动更新')
+        this._status = 'error'
+        this._error = '自动更新可能不稳定，请手动下载更新'
+        this.emitStatusChanged({
+          status: this._status,
+          error: this._error,
+          info: this._versionInfo
+        })
+        return
+      }
+
+      this._status = 'available'
+      this.emitStatusChanged({
+        status: this._status,
+        info: this._versionInfo
+      })
+
+      if (this._lastCheckType === 'autoCheck') {
+        this.startDownloadUpdate()
+      }
     })
 
     // 下载进度
@@ -116,29 +249,17 @@ export class UpgradePresenter implements IUpgradePresenter {
         transferred: progressObj.transferred,
         total: progressObj.total
       }
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
+      this.emitStatusChanged({
         status: this._status,
         info: this._versionInfo // 使用已保存的版本信息
       })
-      eventBus.sendToRenderer(UPDATE_EVENTS.PROGRESS, SendTarget.ALL_WINDOWS, this._progress)
+      this.emitProgress(this._progress)
     })
 
     // 下载完成
     autoUpdater.on('update-downloaded', (info) => {
-      console.log('更新下载完成', info)
-      this._lock = false
-      this._status = 'downloaded'
-
-      // 写入更新标记文件
-      this.writeUpdateMarker(this._versionInfo?.version || info.version)
-
-      // 确保保存完整的更新信息
-      console.log('使用已保存的版本信息:', this._versionInfo)
-
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
-        status: this._status,
-        info: this._versionInfo // 使用已保存的版本信息
-      })
+      logger.info('更新下载完成', info)
+      this.markUpdateDownloaded(info)
     })
 
     // 监听应用获得焦点事件
@@ -155,7 +276,7 @@ export class UpgradePresenter implements IUpgradePresenter {
         const content = fs.readFileSync(this._updateMarkerPath, 'utf8')
         const updateInfo = JSON.parse(content)
         const currentVersion = app.getVersion()
-        console.log('检查未完成的更新', updateInfo, currentVersion)
+        logger.info('检查未完成的更新', updateInfo, currentVersion)
 
         // 如果当前版本与目标版本相同，说明更新已完成
         if (updateInfo.version === currentVersion) {
@@ -164,8 +285,21 @@ export class UpgradePresenter implements IUpgradePresenter {
           return
         }
 
+        // 渠道一致性校验：marker 中的目标版本若与当前安装包不属于同一渠道（beta vs stable），
+        // 说明上次的"待完成更新"来自渠道错配，应直接丢弃而不是钉死为 previousUpdateFailed
+        const markerVersion = typeof updateInfo.version === 'string' ? updateInfo.version : ''
+        if (markerVersion) {
+          const markerIsPre = isPrereleaseVersion(markerVersion)
+          const currentIsPre = isPrereleaseVersion(currentVersion)
+          if (markerIsPre !== currentIsPre) {
+            logger.info('忽略跨渠道的旧 update marker', { marker: markerVersion, currentVersion })
+            fs.unlinkSync(this._updateMarkerPath)
+            return
+          }
+        }
+
         // 否则说明上次更新失败，标记为错误状态
-        console.log('检测到未完成的更新', updateInfo.version)
+        logger.info('检测到未完成的更新', updateInfo.version)
         this._status = 'error'
         this._error = '上次自动更新未完成'
         this._versionInfo = updateInfo
@@ -175,7 +309,7 @@ export class UpgradePresenter implements IUpgradePresenter {
         fs.unlinkSync(this._updateMarkerPath)
 
         // 通知渲染进程
-        eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
+        this.emitStatusChanged({
           status: this._status,
           error: this._error,
           info: {
@@ -213,98 +347,79 @@ export class UpgradePresenter implements IUpgradePresenter {
       }
 
       fs.writeFileSync(this._updateMarkerPath, JSON.stringify(updateInfo, null, 2), 'utf8')
-      console.log('写入更新标记文件成功', this._updateMarkerPath)
+      logger.info('写入更新标记文件成功', this._updateMarkerPath)
     } catch (error) {
       console.error('写入更新标记文件失败', error)
     }
   }
 
+  private markUpdateDownloaded(info?: UpdateInfo): void {
+    this._isMockUpdate = false
+    this._lock = false
+    this._status = 'downloaded'
+    this._error = null
+    this._progress = null
+
+    if (!this._versionInfo && info) {
+      this._versionInfo = toVersionInfo(info)
+    }
+
+    if (!this._versionInfo) {
+      console.warn('Downloaded update is missing version info, skipping renderer broadcast.')
+      return
+    }
+
+    this.writeUpdateMarker(this._versionInfo.version)
+    this.emitStatusChanged({
+      status: this._status,
+      info: this._versionInfo
+    })
+  }
+
   // 处理应用获得焦点事件
   private handleAppFocus(): void {
+    if (this._configPresenter.getPrivacyModeEnabled()) {
+      return
+    }
+
     const now = Date.now()
     const twelveHoursInMs = 12 * 60 * 60 * 1000 // 12小时的毫秒数
     // 如果距离上次检查更新超过12小时，则重新检查
     if (now - this._lastCheckTime > twelveHoursInMs) {
-      this.checkUpdate()
+      this.checkUpdate('autoCheck')
     }
   }
 
-  async checkUpdate(): Promise<void> {
+  /**
+   *
+   * @param type 检查更新的类型，'autoCheck'表示自动检查
+   *            如果不传则默认为手动检查
+   * @returns
+   */
+  async checkUpdate(type?: string): Promise<void> {
     if (this._lock) {
       return
     }
 
     try {
       this._status = 'checking'
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, { status: this._status })
+      this._error = null
+      this._progress = null
+      this._lastCheckType = type ?? 'manualCheck'
+      this.emitStatusChanged({
+        status: this._status
+      })
 
-      // 首先获取版本信息文件
-      const platformString = getPlatformInfo()
-      const versionUrl = `${this._baseUrl}/${platformString}.json?noCache=${randomId}`
+      const updateChannel = normalizeUpdateChannel(this._configPresenter.getUpdateChannel())
+      autoUpdater.allowPrerelease = updateChannel === UPDATE_CHANNEL_BETA
+      autoUpdater.channel = updateChannel === UPDATE_CHANNEL_BETA ? UPDATE_CHANNEL_BETA : 'latest'
 
-      const response = await axios.get<VersionInfo>(versionUrl)
-      const remoteVersion = response.data
-      const currentVersion = app.getVersion()
-
-      // 保存完整的远程版本信息到内存中，作为唯一的标准信息源
-      this._versionInfo = {
-        version: remoteVersion.version,
-        releaseDate: remoteVersion.releaseDate,
-        releaseNotes: remoteVersion.releaseNotes,
-        githubUrl: remoteVersion.githubUrl,
-        downloadUrl: remoteVersion.downloadUrl
-      }
-
-      console.log('cache versionInfo：', this._versionInfo)
-
-      // 更新上次检查时间
+      await autoUpdater.checkForUpdates()
       this._lastCheckTime = Date.now()
-
-      // 比较版本号
-      if (compare(remoteVersion.version, currentVersion, '>')) {
-        // 有新版本
-
-        // 如果上次更新失败，这次不再尝试自动更新，直接进入错误状态让用户手动更新
-        if (this._previousUpdateFailed) {
-          console.log('上次更新失败，本次不进行自动更新，改为手动更新')
-          this._status = 'error'
-          this._error = '自动更新可能不稳定，请手动下载更新'
-
-          eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
-            status: this._status,
-            error: this._error,
-            info: this._versionInfo
-          })
-          return
-        }
-
-        // 设置自动更新的URL
-        const autoUpdateUrl = `${this._baseUrl}/v${remoteVersion.version}/${platformString}`
-        console.log('设置自动更新URL:', autoUpdateUrl)
-        autoUpdater.setFeedURL(autoUpdateUrl)
-
-        try {
-          // 使用electron-updater检查更新，但不自动下载
-          await autoUpdater.checkForUpdates()
-        } catch (err) {
-          console.error('自动更新检查失败，回退到手动更新', err)
-          // 如果自动更新失败，回退到手动更新
-          this._status = 'available'
-
-          eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
-            status: this._status,
-            info: this._versionInfo // 使用已保存的版本信息
-          })
-        }
-      } else {
-        // 没有新版本
-        this._status = 'not-available'
-        eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, { status: this._status })
-      }
     } catch (error: Error | unknown) {
       this._status = 'error'
       this._error = error instanceof Error ? error.message : String(error)
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
+      this.emitStatusChanged({
         status: this._status,
         error: this._error
       })
@@ -318,24 +433,25 @@ export class UpgradePresenter implements IUpgradePresenter {
       error: this._error,
       updateInfo: this._versionInfo
         ? {
-          version: this._versionInfo.version,
-          releaseDate: this._versionInfo.releaseDate,
-          releaseNotes: this._versionInfo.releaseNotes,
-          githubUrl: this._versionInfo.githubUrl,
-          downloadUrl: this._versionInfo.downloadUrl
-        }
+            version: this._versionInfo.version,
+            releaseDate: this._versionInfo.releaseDate,
+            releaseNotes: this._versionInfo.releaseNotes,
+            githubUrl: this._versionInfo.githubUrl,
+            downloadUrl: this._versionInfo.downloadUrl
+          }
         : null
     }
   }
 
-  async goDownloadUpgrade(type: 'github' | 'netdisk'): Promise<void> {
+  async goDownloadUpgrade(type: 'github' | 'official'): Promise<void> {
+    const githubFallbackUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`
     if (type === 'github') {
-      const url = this._versionInfo?.githubUrl
+      const url = this._versionInfo?.githubUrl || githubFallbackUrl
       if (url) {
         shell.openExternal(url)
       }
-    } else if (type === 'netdisk') {
-      const url = this._versionInfo?.downloadUrl
+    } else if (type === 'official') {
+      const url = this._versionInfo?.downloadUrl || OFFICIAL_DOWNLOAD_URL
       if (url) {
         shell.openExternal(url)
       }
@@ -349,16 +465,35 @@ export class UpgradePresenter implements IUpgradePresenter {
     }
     try {
       this._status = 'downloading'
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
+      this.emitStatusChanged({
         status: this._status,
         info: this._versionInfo // 使用已保存的版本信息
       })
-      autoUpdater.downloadUpdate()
+      void autoUpdater
+        .downloadUpdate()
+        .then(() => {
+          if (this._status !== 'downloaded') {
+            logger.info(
+              'downloadUpdate resolved before update-downloaded event, applying fallback downloaded status'
+            )
+            this.markUpdateDownloaded()
+          }
+        })
+        .catch((error: Error | unknown) => {
+          this._lock = false
+          this._status = 'error'
+          this._error = error instanceof Error ? error.message : String(error)
+          this.emitStatusChanged({
+            status: this._status,
+            error: this._error,
+            info: this._versionInfo
+          })
+        })
       return true
     } catch (error: Error | unknown) {
       this._status = 'error'
       this._error = error instanceof Error ? error.message : String(error)
-      eventBus.sendToRenderer(UPDATE_EVENTS.STATUS_CHANGED, SendTarget.ALL_WINDOWS, {
+      this.emitStatusChanged({
         status: this._status,
         error: this._error
       })
@@ -366,44 +501,142 @@ export class UpgradePresenter implements IUpgradePresenter {
     }
   }
 
-  // 执行退出并安装
+  // Execute quit and install update for all platforms
   private _doQuitAndInstall(): void {
-    console.log('准备退出并安装更新')
-    try {
-      // 发送即将重启的消息
-      eventBus.sendToRenderer(UPDATE_EVENTS.WILL_RESTART, SendTarget.ALL_WINDOWS)
-      // 通知需要完全退出应用
-      eventBus.sendToMain(WINDOW_EVENTS.FORCE_QUIT_APP)
+    logger.info('Preparing to quit and install update')
+    this.beginInstallFlow(() => {
+      if (process.platform === 'darwin') {
+        logger.info('macOS update: calling quitAndInstall with forceRunAfter=true')
+        autoUpdater.quitAndInstall(false, true) // silent=false, forceRunAfter=true
+        return
+      }
+
+      logger.info(`${process.platform} update: calling quitAndInstall`)
       autoUpdater.quitAndInstall()
-      // 如果30秒还没完成，就强制退出重启
+    })
+  }
+
+  private _doMockQuitAndInstall(): void {
+    logger.info('Preparing to run mock update restart flow')
+    this.beginInstallFlow(() => {
+      logger.info('Mock update: relaunching app instead of invoking installer')
+      app.relaunch()
+      app.exit()
+    })
+  }
+
+  private beginInstallFlow(installAction: () => void): void {
+    try {
+      this.emitWillRestart()
+
+      logger.info('Update installation: setting application state for proper quit behavior')
+      this.setUpdatingFlag(true)
+      this.prepareFloatingUiForUpdateInstall()
+      eventBus.sendToMain(WINDOW_EVENTS.SET_APPLICATION_QUITTING, { isQuitting: true })
+
       setTimeout(() => {
-        app.quit()
+        installAction()
+      }, 500)
+
+      setTimeout(() => {
+        logger.info('Update installation timeout, force quit')
+        app.quit() // Exit trigger: upgrade
       }, 30000)
     } catch (e) {
-      console.error('退出并安装失败', e)
-      eventBus.sendToRenderer(UPDATE_EVENTS.ERROR, SendTarget.ALL_WINDOWS, {
-        error: e instanceof Error ? e.message : String(e)
-      })
+      console.error('Failed to start update installation flow', e)
+      this.setUpdatingFlag(false)
+
+      logger.info('Resetting application quitting flag after update error')
+      eventBus.sendToMain(WINDOW_EVENTS.SET_APPLICATION_QUITTING, { isQuitting: false })
+
+      this.emitError(e instanceof Error ? e.message : String(e))
     }
+  }
+
+  private prepareFloatingUiForUpdateInstall(): void {
+    if (!presenter) {
+      logger.info('Update installation: presenter not ready, skipping floating UI cleanup')
+      return
+    }
+
+    try {
+      presenter.windowPresenter.setApplicationQuitting(true)
+    } catch (error) {
+      console.warn('Update installation: failed to set application quitting flag directly', error)
+    }
+
+    try {
+      presenter.windowPresenter.destroyFloatingChatWindow()
+    } catch (error) {
+      console.warn('Update installation: failed to destroy floating chat window', error)
+    }
+
+    try {
+      presenter.floatingButtonPresenter.destroy()
+    } catch (error) {
+      console.warn('Update installation: failed to destroy floating button window', error)
+    }
+  }
+
+  mockDownloadedUpdate(): boolean {
+    this._isMockUpdate = true
+    this._lock = false
+    this._status = 'downloaded'
+    this._error = null
+    this._progress = null
+    this._versionInfo = {
+      version: '9.9.9-mock',
+      releaseDate: '2026-04-16',
+      releaseNotes:
+        '## Mock Update\n\n- Simulates a downloaded update.\n- Uses the real restart/install UI flow.\n- Intended for floating window shutdown verification.',
+      githubUrl: '',
+      downloadUrl: '',
+      isMock: true
+    }
+
+    this.emitStatusChanged({
+      status: this._status,
+      info: this._versionInfo
+    })
+    return true
+  }
+
+  clearMockUpdate(): boolean {
+    if (!this._isMockUpdate) {
+      return false
+    }
+
+    this._isMockUpdate = false
+    this._lock = false
+    this._status = 'not-available'
+    this._error = null
+    this._progress = null
+    this._versionInfo = null
+
+    this.emitStatusChanged({
+      status: this._status
+    })
+    return true
   }
 
   // 重启并更新
   restartToUpdate(): boolean {
-    console.log('重启并更新')
+    logger.info('重启并更新')
     if (this._status !== 'downloaded') {
-      eventBus.sendToRenderer(UPDATE_EVENTS.ERROR, SendTarget.ALL_WINDOWS, {
-        error: '更新尚未下载完成'
-      })
+      this.emitError('更新尚未下载完成')
       return false
     }
     try {
+      if (this._isMockUpdate) {
+        this._doMockQuitAndInstall()
+        return true
+      }
+
       this._doQuitAndInstall()
       return true
     } catch (e) {
       console.error('重启更新失败', e)
-      eventBus.sendToRenderer(UPDATE_EVENTS.ERROR, SendTarget.ALL_WINDOWS, {
-        error: e instanceof Error ? e.message : String(e)
-      })
+      this.emitError(e instanceof Error ? e.message : String(e))
       return false
     }
   }
@@ -412,7 +645,7 @@ export class UpgradePresenter implements IUpgradePresenter {
   restartApp(): void {
     try {
       // 发送即将重启的消息
-      eventBus.sendToRenderer(UPDATE_EVENTS.WILL_RESTART, SendTarget.ALL_WINDOWS)
+      this.emitWillRestart()
       // 给UI层一点时间保存状态
       setTimeout(() => {
         app.relaunch()
@@ -420,9 +653,19 @@ export class UpgradePresenter implements IUpgradePresenter {
       }, 1000)
     } catch (e) {
       console.error('重启失败', e)
-      eventBus.sendToRenderer(UPDATE_EVENTS.ERROR, SendTarget.ALL_WINDOWS, {
-        error: e instanceof Error ? e.message : String(e)
-      })
+      this.emitError(e instanceof Error ? e.message : String(e))
     }
+  }
+
+  // Set update flag and broadcast state
+  private setUpdatingFlag(updating: boolean): void {
+    this._isUpdating = updating
+    // Broadcast update state to lifecycle manager
+    eventBus.sendToMain(UPDATE_EVENTS.STATE_CHANGED, { isUpdating: updating })
+  }
+
+  // Get update flag
+  isUpdatingInProgress(): boolean {
+    return this._isUpdating
   }
 }

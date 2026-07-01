@@ -1,8 +1,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import { zodToJsonSchema } from 'zod-to-json-schema'
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import { toDeepChatJsonSchema } from '@shared/lib/zodJsonSchema'
+import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import axios from 'axios'
 
 // Schema definitions
@@ -84,10 +84,11 @@ export class BraveSearchServer {
   }
 
   constructor(env?: Record<string, unknown>) {
-    if (!env?.apiKey) {
+    const apiKey = String(env?.apiKey ?? '')
+    if (!apiKey) {
       throw new Error('需要提供Brave API Key')
     }
-    this.apiKey = env.apiKey as string
+    this.apiKey = apiKey
 
     // 创建服务器实例
     this.server = new Server(
@@ -312,7 +313,12 @@ export class BraveSearchServer {
               'Use this for broad information gathering, recent events, or when you need diverse web sources. ' +
               'Supports pagination, content filtering, and freshness controls. ' +
               'Maximum 20 results per request, with offset for pagination. ',
-            inputSchema: zodToJsonSchema(BraveWebSearchArgsSchema)
+            inputSchema: toDeepChatJsonSchema(BraveWebSearchArgsSchema),
+            annotations: {
+              title: 'Brave Web Search',
+              readOnlyHint: true,
+              openWorldHint: true
+            }
           },
           {
             name: 'brave_local_search',
@@ -325,7 +331,12 @@ export class BraveSearchServer {
               '- Phone numbers and opening hours\n' +
               "Use this when the query implies 'near me' or mentions specific locations. " +
               'Automatically falls back to web search if no local results are found.',
-            inputSchema: zodToJsonSchema(BraveLocalSearchArgsSchema)
+            inputSchema: toDeepChatJsonSchema(BraveLocalSearchArgsSchema),
+            annotations: {
+              title: 'Brave Local Search',
+              readOnlyHint: true,
+              openWorldHint: true
+            }
           }
         ]
       }

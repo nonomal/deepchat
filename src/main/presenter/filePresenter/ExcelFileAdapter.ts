@@ -20,8 +20,13 @@ export class ExcelFileAdapter extends BaseFileAdapter {
     if (!this.workbook) {
       const stats = await fs.stat(this.filePath)
       if (stats.size <= this.maxFileSize) {
-        const buffer = await fs.readFile(this.filePath)
-        this.workbook = XLSX.read(buffer)
+        try {
+          const buffer = await fs.readFile(this.filePath)
+          this.workbook = XLSX.read(buffer)
+        } catch (error) {
+          console.error('Error reading spreadsheet file:', error)
+          this.fileContent = `Error processing spreadsheet file: ${(error as Error).message}`
+        }
       }
     }
     return this.workbook
@@ -31,7 +36,7 @@ export class ExcelFileAdapter extends BaseFileAdapter {
     const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1')
     const rows: string[][] = []
 
-    // 获取所有单元格数据
+    // Get all cell data
     for (let r = range.s.r; r <= range.e.r; r++) {
       const row: string[] = []
       for (let c = range.s.c; c <= range.e.c; c++) {
@@ -62,7 +67,7 @@ export class ExcelFileAdapter extends BaseFileAdapter {
 
   public async getLLMContent(): Promise<string | undefined> {
     const workbook = await this.loadWorkbook()
-    if (!workbook) return undefined
+    if (!workbook) return this.fileContent
 
     // const stats = await fs.stat(this.filePath)
 
@@ -74,7 +79,7 @@ export class ExcelFileAdapter extends BaseFileAdapter {
 
     ## Sheets Information\n`
 
-    // 为每个工作表生成预览
+    // Generate preview for each worksheet
     const sheetsContent = workbook.SheetNames.map((sheetName) => {
       const sheet = workbook.Sheets[sheetName]
       const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1')

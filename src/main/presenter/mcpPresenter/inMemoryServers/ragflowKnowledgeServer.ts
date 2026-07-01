@@ -1,8 +1,9 @@
+import logger from '@shared/logger'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import { zodToJsonSchema } from 'zod-to-json-schema'
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import { toDeepChatJsonSchema } from '@shared/lib/zodJsonSchema'
+import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import axios from 'axios'
 
 // Schema definitions
@@ -55,15 +56,7 @@ export class RagflowKnowledgeServer {
     enabled: boolean
   }> = []
 
-  constructor(env?: {
-    configs: {
-      apiKey: string
-      endpoint: string
-      datasetIds: string[]
-      description: string
-      enabled: boolean
-    }[]
-  }) {
+  constructor(env?: Record<string, unknown>) {
     if (!env) {
       throw new Error('需要提供RAGFlow知识库配置')
     }
@@ -76,22 +69,30 @@ export class RagflowKnowledgeServer {
 
     // 处理每个配置
     for (const env of envs) {
-      if (!env.apiKey) {
+      const config = env && typeof env === 'object' ? (env as Record<string, unknown>) : {}
+      const apiKey = String(config.apiKey ?? '')
+      const datasetIds = Array.isArray(config.datasetIds)
+        ? config.datasetIds.map((datasetId) => String(datasetId ?? '')).filter(Boolean)
+        : []
+      const description = String(config.description ?? '')
+      const endpoint = String(config.endpoint ?? '') || 'http://localhost:8000'
+
+      if (!apiKey) {
         throw new Error('需要提供RAGFlow API Key')
       }
-      if (!env.datasetIds || !Array.isArray(env.datasetIds) || env.datasetIds.length === 0) {
+      if (datasetIds.length === 0) {
         throw new Error('需要提供至少一个RAGFlow Dataset ID')
       }
-      if (!env.description) {
+      if (!description) {
         throw new Error('需要提供对这个知识库的描述，以方便ai决定是否检索此知识库')
       }
 
       this.configs.push({
-        apiKey: env.apiKey,
-        datasetIds: env.datasetIds,
-        endpoint: env.endpoint || 'http://localhost:8000',
-        description: env.description,
-        enabled: env.enabled
+        apiKey,
+        datasetIds,
+        endpoint,
+        description,
+        enabled: config.enabled === true || String(config.enabled ?? '').toLowerCase() === 'true'
       })
     }
 
@@ -128,7 +129,12 @@ export class RagflowKnowledgeServer {
           return {
             name: `ragflow_knowledge_search${suffix}`,
             description: config.description,
-            inputSchema: zodToJsonSchema(RagflowKnowledgeSearchArgsSchema)
+            inputSchema: toDeepChatJsonSchema(RagflowKnowledgeSearchArgsSchema),
+            annotations: {
+              title: 'RAGFlow Knowledge Search',
+              readOnlyHint: true,
+              openWorldHint: true
+            }
           }
         })
       return { tools }
@@ -214,7 +220,7 @@ export class RagflowKnowledgeServer {
 
     try {
       const url = `${config.endpoint.replace(/\/$/, '')}/api/v1/retrieval`
-      console.log('performRagflowKnowledgeSearch request', url, {
+      logger.info('performRagflowKnowledgeSearch request', url, {
         question: query,
         dataset_ids: config.datasetIds,
         top_k: topK,

@@ -1,15 +1,25 @@
+import logger from '@shared/logger'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { eventBus } from '@/eventbus'
-import { WINDOW_EVENTS, CONFIG_EVENTS, SYSTEM_EVENTS, TAB_EVENTS } from '@/events'
+import { WINDOW_EVENTS, CONFIG_EVENTS, TAB_EVENTS } from '@/events'
 import { is } from '@electron-toolkit/utils'
 import { ITabPresenter, TabCreateOptions, IWindowPresenter, TabData } from '@shared/presenter'
-import { BrowserWindow, WebContentsView, shell, nativeImage } from 'electron'
+import {
+  BrowserWindow,
+  WebContentsView,
+  nativeImage,
+  webContents as electronWebContents,
+  type WebPreferences
+} from 'electron'
 import { join } from 'path'
 import contextMenu from '@/contextMenuHelper'
 import { getContextMenuLabels } from '@shared/i18n'
 import { app } from 'electron'
 import { addWatermarkToNativeImage } from '@/lib/watermark'
 import { stitchImagesVertically } from '@/lib/scrollCapture'
+import { openExternalUrl } from '@/lib/externalUrl'
+import { presenter } from './'
+import { getYoBrowserSession } from './browser/yoBrowserSession'
 
 export class TabPresenter implements ITabPresenter {
   // 全局标签页实例存储
@@ -30,6 +40,11 @@ export class TabPresenter implements ITabPresenter {
   // WebContents ID 到 Tab ID 的映射 (用于IPC调用来源识别)
   private webContentsToTabId: Map<number, number> = new Map()
 
+  private windowTypes: Map<number, 'chat' | 'browser'> = new Map()
+  private chromeHeights: Map<number, number> = new Map()
+  private static readonly DEFAULT_CHROME_HEIGHT = 60
+  private static readonly DEFAULT_WINDOW_TYPE: 'chat' | 'browser' = 'chat'
+
   private windowPresenter: IWindowPresenter // 窗口管理器实例
 
   constructor(windowPresenter: IWindowPresenter) {
@@ -37,20 +52,41 @@ export class TabPresenter implements ITabPresenter {
     this.initBusHandlers()
   }
 
+  setWindowType(windowId: number, type: 'chat' | 'browser'): void {
+    this.windowTypes.set(windowId, type)
+  }
+
+  getWindowType(windowId: number): 'chat' | 'browser' {
+    return this.windowTypes.get(windowId) ?? TabPresenter.DEFAULT_WINDOW_TYPE
+  }
+
+  private onWindowSizeChange(windowId: number) {
+    const views = this.windowTabs.get(windowId)
+    const window = BrowserWindow.fromId(windowId)
+    if (window && !window.isDestroyed()) {
+      views?.forEach((view) => {
+        const tabView = this.tabs.get(view)
+        if (tabView) {
+          this.updateViewBounds(window, tabView)
+        }
+      })
+    }
+  }
   // 初始化事件总线处理器
   private initBusHandlers(): void {
     // 窗口尺寸变化，更新视图 bounds
-    eventBus.on(WINDOW_EVENTS.WINDOW_RESIZE, (windowId: number) => {
-      const views = this.windowTabs.get(windowId)
-      const window = BrowserWindow.fromId(windowId)
-      if (window) {
-        views?.forEach((view) => {
-          const tabView = this.tabs.get(view)
-          if (tabView) {
-            this.updateViewBounds(window, tabView)
-          }
-        })
-      }
+    eventBus.on(WINDOW_EVENTS.WINDOW_RESIZE, (windowId: number) =>
+      this.onWindowSizeChange(windowId)
+    )
+    eventBus.on(WINDOW_EVENTS.WINDOW_MAXIMIZED, (windowId: number) => {
+      setTimeout(() => {
+        this.onWindowSizeChange(windowId)
+      }, 100)
+    })
+    eventBus.on(WINDOW_EVENTS.WINDOW_UNMAXIMIZED, (windowId: number) => {
+      setTimeout(() => {
+        this.onWindowSizeChange(windowId)
+      }, 100)
     })
 
     // 窗口关闭，分离包含的视图
@@ -63,8 +99,15 @@ export class TabPresenter implements ITabPresenter {
           if (view) {
             this.detachViewFromWindow(window, view)
           }
+          const conversationId = presenter.getActiveConversationIdSync(viewId)
+          if (conversationId) {
+            void presenter.cleanupConversationRuntimeArtifacts(conversationId)
+          }
         })
       }
+      this.windowTabs.delete(windowId)
+      this.windowTypes.delete(windowId)
+      this.chromeHeights.delete(windowId)
     })
 
     // 语言设置改变，更新所有标签页右键菜单
@@ -73,16 +116,6 @@ export class TabPresenter implements ITabPresenter {
         // 为所有活动的标签页更新右键菜单
         for (const [tabId] of this.tabWindowMap.entries()) {
           await this.setupTabContextMenu(tabId)
-        }
-      }
-    })
-
-    // 系统主题更新，通知所有标签页
-    eventBus.on(SYSTEM_EVENTS.SYSTEM_THEME_UPDATED, (isDark: boolean) => {
-      // 向所有标签页广播主题更新
-      for (const [, view] of this.tabs.entries()) {
-        if (!view.webContents.isDestroyed()) {
-          view.webContents.send('system-theme-updated', isDark)
         }
       }
     })
@@ -96,20 +129,52 @@ export class TabPresenter implements ITabPresenter {
     url: string,
     options: TabCreateOptions = {}
   ): Promise<number | null> {
-    console.log('createTab', windowId, url, options)
+    logger.info('createTab', windowId, url, options)
     const window = BrowserWindow.fromId(windowId)
     if (!window) return null
+    if (!this.windowTypes.has(windowId)) {
+      this.windowTypes.set(windowId, TabPresenter.DEFAULT_WINDOW_TYPE)
+    }
+    const windowType = this.getWindowType(windowId)
+    const isLocalUrl = url.startsWith('local://')
+
+    if (windowType === 'browser' && isLocalUrl) {
+      console.warn(`Browser window ${windowId} cannot open local tab: ${url}`)
+      return null
+    }
+
+    if (windowType === 'chat' && !isLocalUrl && !options.allowNonLocal) {
+      console.warn(
+        `Chat window ${windowId} cannot open external tab without explicit opt-in: ${url}`
+      )
+      return null
+    }
+
+    if (!this.chromeHeights.has(windowId)) {
+      this.chromeHeights.set(windowId, TabPresenter.DEFAULT_CHROME_HEIGHT)
+    }
+
+    const webPreferences: WebPreferences = {
+      sandbox: false,
+      devTools: is.dev
+    }
+
+    // 对于 browser 窗口，不注入 preload（安全考虑）
+    // 对于 chat 窗口，注入 preload
+    if (windowType !== 'browser') {
+      webPreferences.preload = join(__dirname, '../preload/index.mjs')
+    }
+
+    if (windowType === 'browser') {
+      webPreferences.session = getYoBrowserSession()
+    }
 
     // 创建新的WebContentsView
     const view = new WebContentsView({
-      webPreferences: {
-        preload: join(__dirname, '../preload/index.mjs'),
-        sandbox: false,
-        devTools: is.dev
-      }
+      webPreferences
     })
 
-    view.setBorderRadius(8)
+    view.setBorderRadius(0)
     view.setBackgroundColor('#00ffffff')
 
     // 加载内容
@@ -126,6 +191,7 @@ export class TabPresenter implements ITabPresenter {
       view.webContents.loadURL(url)
     }
 
+    // 开发模式下自动打开 DevTools
     if (is.dev) {
       view.webContents.openDevTools({ mode: 'detach' })
     }
@@ -181,6 +247,14 @@ export class TabPresenter implements ITabPresenter {
    */
   async closeTab(tabId: number): Promise<boolean> {
     return await this.destroyTab(tabId)
+  }
+
+  /**
+   * 销毁标签页
+   */
+  async closeTabs(windowId: number): Promise<void> {
+    const tabs = [...(this.windowTabs.get(windowId) ?? [])]
+    tabs.forEach((t) => this.closeTab(t))
   }
 
   /**
@@ -250,7 +324,7 @@ export class TabPresenter implements ITabPresenter {
     }
 
     // 销毁视图
-    view.webContents.closeDevTools()
+    view.webContents.close()
     // Note: view.destroy() is also an option depending on Electron version/behavior
     return true
   }
@@ -286,9 +360,6 @@ export class TabPresenter implements ITabPresenter {
 
     // 通知渲染进程更新标签列表
     await this.notifyWindowTabsUpdate(windowId)
-
-    // 通知渲染进程切换活动标签
-    window.webContents.send('setActiveTab', windowId, tabId)
 
     return true
   }
@@ -340,7 +411,26 @@ export class TabPresenter implements ITabPresenter {
     if (!view) return false
 
     const window = BrowserWindow.fromId(targetWindowId)
-    if (!window) return false
+    if (!window || window.isDestroyed()) return false
+    const state = this.tabState.get(tabId)
+    if (!state) {
+      console.warn(`attachTab: Tab ${tabId} state not found.`)
+      return false
+    }
+    const targetWindowType = this.getWindowType(targetWindowId)
+    const isLocal = state.url?.startsWith('local://')
+
+    if (targetWindowType === 'browser' && isLocal) {
+      console.warn(`Browser window ${targetWindowId} cannot attach local tab ${tabId}.`)
+      return false
+    }
+    if (targetWindowType === 'chat' && !isLocal) {
+      console.warn(`Chat window ${targetWindowId} cannot attach external tab ${tabId}.`)
+      return false
+    }
+    if (!this.chromeHeights.has(targetWindowId)) {
+      this.chromeHeights.set(targetWindowId, TabPresenter.DEFAULT_CHROME_HEIGHT)
+    }
 
     // 确保目标窗口有标签列表
     if (!this.windowTabs.has(targetWindowId)) {
@@ -372,6 +462,22 @@ export class TabPresenter implements ITabPresenter {
    */
   async moveTab(tabId: number, targetWindowId: number, index?: number): Promise<boolean> {
     const windowId = this.tabWindowMap.get(tabId)
+    const tabState = this.tabState.get(tabId)
+    if (!tabState) {
+      console.warn(`moveTab: Tab ${tabId} state not found.`)
+      return false
+    }
+    const targetWindowType = this.getWindowType(targetWindowId)
+    const isLocal = tabState.url?.startsWith('local://')
+
+    if (targetWindowType === 'browser' && isLocal) {
+      console.warn(`Browser window ${targetWindowId} cannot receive local tab ${tabId}.`)
+      return false
+    }
+    if (targetWindowType === 'chat' && !isLocal) {
+      console.warn(`Chat window ${targetWindowId} cannot receive external tab ${tabId}.`)
+      return false
+    }
 
     // 如果已经在目标窗口中，仅调整位置
     if (windowId === targetWindowId) {
@@ -429,7 +535,7 @@ export class TabPresenter implements ITabPresenter {
     }
 
     // 未找到活动标签页
-    console.log(`TabPresenter: No active tab found for window ${windowId}.`)
+    logger.info(`TabPresenter: No active tab found for window ${windowId}.`)
     return undefined
   }
 
@@ -463,20 +569,15 @@ export class TabPresenter implements ITabPresenter {
     return tabId ? this.tabWindowMap.get(tabId) : undefined
   }
 
+  getTabWindowId(tabId: number): number | undefined {
+    return this.tabWindowMap.get(tabId)
+  }
+
   /**
    * 通知渲染进程更新标签列表
    */
-  async notifyWindowTabsUpdate(windowId: number): Promise<void> {
-    const window = BrowserWindow.fromId(windowId)
-    if (!window || window.isDestroyed()) return
-
-    // Await the internal async call
-    const tabListData = await this.getWindowTabsData(windowId)
-
-    if (!window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-      // Sending IPC is typically synchronous
-      window.webContents.send('update-window-tabs', windowId, tabListData)
-    }
+  async notifyWindowTabsUpdate(_windowId: number): Promise<void> {
+    // The legacy tab shell renderer no longer subscribes to tab list updates.
   }
 
   /**
@@ -489,8 +590,7 @@ export class TabPresenter implements ITabPresenter {
   ): void {
     // 处理外部链接
     webContents.setWindowOpenHandler(({ url }) => {
-      // 使用系统默认浏览器打开链接
-      shell.openExternal(url)
+      openExternalUrl(url, 'tab window')
       return { action: 'deny' }
     })
 
@@ -499,28 +599,29 @@ export class TabPresenter implements ITabPresenter {
       const state = this.tabState.get(tabId)
       if (state) {
         state.title = title || state.url || 'Untitled'
-        // 通知渲染进程标题已更新
-        const window = BrowserWindow.fromId(windowId)
-        if (window && !window.isDestroyed()) {
-          window.webContents.send(TAB_EVENTS.TITLE_UPDATED, {
-            tabId,
-            title: state.title,
-            windowId
-          })
-        }
         this.notifyWindowTabsUpdate(windowId).catch(console.error) // Call async function, handle potential rejection
       }
     })
 
     // 检查是否是窗口的第一个标签页
     const isFirstTab = this.windowTabs.get(windowId)?.length === 1
+    const windowType = this.getWindowType(windowId)
 
     // 页面加载完成
     if (isFirstTab) {
-      eventBus.sendToMain(WINDOW_EVENTS.READY_TO_SHOW)
       // Once did-finish-load happens, emit first content loaded
       webContents.once('did-finish-load', () => {
         eventBus.sendToMain(WINDOW_EVENTS.FIRST_CONTENT_LOADED, windowId)
+        // Only call focusActiveTab for chat windows, not browser windows
+        // Browser windows should stay hidden when created via tool calls
+        if (windowType !== 'browser') {
+          setTimeout(() => {
+            const windowPresenter = presenter.windowPresenter as any
+            if (windowPresenter && typeof windowPresenter.focusActiveTab === 'function') {
+              windowPresenter.focusActiveTab(windowId, 'initial')
+            }
+          }, 300)
+        }
       })
     }
 
@@ -530,7 +631,7 @@ export class TabPresenter implements ITabPresenter {
         const state = this.tabState.get(tabId)
         if (state) {
           if (state.icon !== favicons[0]) {
-            console.log('page-favicon-updated', state.icon, favicons[0])
+            logger.info('page-favicon-updated', state.icon, favicons[0])
             state.icon = favicons[0]
             this.notifyWindowTabsUpdate(windowId).catch(console.error) // Call async function, handle potential rejection
           }
@@ -542,17 +643,12 @@ export class TabPresenter implements ITabPresenter {
     webContents.on('did-navigate', (_event, url) => {
       const state = this.tabState.get(tabId)
       if (state) {
-        state.url = url
-        // 如果没有标题，使用URL作为标题
-        if (!state.title || state.title === 'Untitled') {
-          state.title = url
-          const window = BrowserWindow.fromId(windowId)
-          if (window && !window.isDestroyed()) {
-            window.webContents.send(TAB_EVENTS.TITLE_UPDATED, {
-              tabId,
-              title: state.title,
-              windowId
-            })
+        const isLocalTab = state.url?.startsWith('local://')
+        if (!isLocalTab) {
+          state.url = url
+          // 如果没有标题，使用URL作为标题
+          if (!state.title || state.title === 'Untitled') {
+            state.title = url
           }
           this.notifyWindowTabsUpdate(windowId).catch(console.error) // Call async function, handle potential rejection
         }
@@ -597,22 +693,41 @@ export class TabPresenter implements ITabPresenter {
     // Re-adding ensures it's on top in most view hierarchies
     window.contentView.addChildView(view)
     this.updateViewBounds(window, view)
+    const windowType = this.getWindowType(window.id)
+    const isVisible = window.isVisible()
+    const isFocused = window.isFocused()
+
+    // For browser windows, only focus if window is already focused
+    // This prevents focus stealing when tools call activateTab() on hidden browser windows
+    // For chat windows, focus if visible (normal behavior)
+    const shouldFocus = windowType === 'browser' ? isVisible && isFocused : isVisible
+
+    if (shouldFocus && !view.webContents.isDestroyed()) {
+      view.webContents.focus()
+    }
   }
 
   /**
    * 更新视图大小以适应窗口
    */
   private updateViewBounds(window: BrowserWindow, view: WebContentsView): void {
+    if (window.isDestroyed()) return
     // 获取窗口尺寸
     const { width, height } = window.getContentBounds()
 
+    // 根据窗口类型使用固定高度值
+    // Chat 模式：AppBar = 36px (h-9)
+    // Browser 模式：AppBar + BrowserToolbar = 36px + 48px = 84px (h-9 + h-12)
+    const windowType = this.getWindowType(window.id)
+    const topOffset = windowType === 'browser' ? 84 : 36
+    const viewHeight = Math.max(0, height - topOffset)
+
     // 设置视图位置大小（留出顶部标签栏空间）
-    const TAB_BAR_HEIGHT = 40 // 标签栏高度，需要根据实际UI调整
     view.setBounds({
-      x: 4,
-      y: TAB_BAR_HEIGHT,
-      width: width - 8,
-      height: height - TAB_BAR_HEIGHT - 4
+      x: 0,
+      y: topOffset,
+      width: width,
+      height: viewHeight
     })
   }
 
@@ -664,7 +779,7 @@ export class TabPresenter implements ITabPresenter {
     // 销毁所有标签页
     // 使用 `for...of` 循环确保每个 closeTab 调用都被 await
     for (const [tabId] of this.tabWindowMap.entries()) {
-      console.log(`Destroying resources for tab: ${tabId}`)
+      logger.info(`Destroying resources for tab: ${tabId}`)
       await this.closeTab(tabId)
     }
 
@@ -674,6 +789,43 @@ export class TabPresenter implements ITabPresenter {
     this.tabState.clear()
     this.windowTabs.clear()
     this.webContentsToTabId.clear()
+    this.windowTypes.clear()
+    this.chromeHeights.clear()
+  }
+
+  /**
+   * 重排序窗口内的标签页
+   */
+  async reorderTabs(windowId: number, tabIds: number[]): Promise<boolean> {
+    logger.info('reorderTabs', windowId, tabIds)
+
+    const windowTabs = this.windowTabs.get(windowId)
+    if (!windowTabs) return false
+
+    for (const tabId of tabIds) {
+      if (!windowTabs.includes(tabId)) {
+        console.warn(`Tab ${tabId} does not belong to window ${windowId}`)
+        return false
+      }
+    }
+
+    if (tabIds.length !== windowTabs.length) {
+      console.warn('Tab count mismatch in reorder operation')
+      return false
+    }
+
+    this.windowTabs.set(windowId, [...tabIds])
+
+    tabIds.forEach((tabId, index) => {
+      const tabState = this.tabState.get(tabId)
+      if (tabState) {
+        tabState.position = index
+      }
+    })
+
+    await this.notifyWindowTabsUpdate(windowId)
+
+    return true
   }
 
   // 将标签页移动到新窗口
@@ -698,16 +850,27 @@ export class TabPresenter implements ITabPresenter {
     }
 
     // 2. 创建新窗口
+    const sourceWindowType = this.getWindowType(originalWindowId)
     const newWindowOptions: Record<string, any> = {
       forMovedTab: true,
-      activateTabId: tabId // Pass the tabId to the new window presenter to activate it
+      windowType: sourceWindowType
     }
     if (screenX !== undefined && screenY !== undefined) {
       newWindowOptions.x = screenX
       newWindowOptions.y = screenY
     }
 
-    const newWindowId = await this.windowPresenter.createShellWindow(newWindowOptions)
+    const newWindowId =
+      sourceWindowType === 'browser'
+        ? await this.windowPresenter.createBrowserWindow({
+            x: newWindowOptions.x,
+            y: newWindowOptions.y
+          })
+        : await this.windowPresenter.createAppWindow({
+            initialRoute: 'chat',
+            x: newWindowOptions.x,
+            y: newWindowOptions.y
+          })
 
     if (newWindowId === null) {
       console.error('moveTabToNewWindow: Failed to create a new window.')
@@ -750,14 +913,43 @@ export class TabPresenter implements ITabPresenter {
     rect: { x: number; y: number; width: number; height: number }
   ): Promise<string | null> {
     try {
-      const view = this.tabs.get(tabId)
-      if (!view || view.webContents.isDestroyed()) {
+      let targetWebContents: Electron.WebContents | null = null
+
+      const tabView = this.tabs.get(tabId)
+      if (tabView && !tabView.webContents.isDestroyed()) {
+        targetWebContents = tabView.webContents
+      } else {
+        const directWebContents = electronWebContents.fromId(tabId)
+        if (directWebContents && !directWebContents.isDestroyed()) {
+          targetWebContents = directWebContents
+        }
+      }
+
+      // Fallback: some callers may pass windowId. Capture active tab in that window.
+      if (!targetWebContents) {
+        const window = BrowserWindow.fromId(tabId)
+        if (window && !window.isDestroyed()) {
+          const activeTabId = await this.getActiveTabId(window.id)
+          if (activeTabId) {
+            const activeView = this.tabs.get(activeTabId)
+            if (activeView && !activeView.webContents.isDestroyed()) {
+              targetWebContents = activeView.webContents
+            }
+          }
+
+          if (!targetWebContents && !window.webContents.isDestroyed()) {
+            targetWebContents = window.webContents
+          }
+        }
+      }
+
+      if (!targetWebContents || targetWebContents.isDestroyed()) {
         console.error(`captureTabArea: Tab ${tabId} not found or destroyed`)
         return null
       }
 
       // 使用Electron的capturePage API进行截图
-      const image = await view.webContents.capturePage(rect)
+      const image = await targetWebContents.capturePage(rect)
 
       if (image.isEmpty()) {
         console.error('Capture tab area: Captured image is empty')
@@ -778,7 +970,7 @@ export class TabPresenter implements ITabPresenter {
    * @param tabId 标签页ID
    */
   async onRendererTabReady(tabId: number): Promise<void> {
-    console.log(`Tab ${tabId} renderer ready`)
+    logger.info(`Tab ${tabId} renderer ready`)
     // 通过事件总线通知其他模块
     eventBus.sendToMain(TAB_EVENTS.RENDERER_TAB_READY, tabId)
   }
@@ -788,7 +980,7 @@ export class TabPresenter implements ITabPresenter {
    * @param threadId 会话ID
    */
   async onRendererTabActivated(threadId: string): Promise<void> {
-    console.log(`Thread ${threadId} activated in renderer`)
+    logger.info(`Thread ${threadId} activated in renderer`)
     // 通过事件总线通知其他模块
     eventBus.sendToMain(TAB_EVENTS.RENDERER_TAB_ACTIVATED, threadId)
   }
@@ -841,7 +1033,7 @@ export class TabPresenter implements ITabPresenter {
       // 转换为base64格式
       const base64Data = watermarkedImage.toDataURL()
 
-      console.log(`Successfully stitched ${imageDataList.length} images with watermark`)
+      logger.info(`Successfully stitched ${imageDataList.length} images with watermark`)
       return base64Data
     } catch (error) {
       console.error('Stitch images with watermark error:', error)
@@ -883,6 +1075,42 @@ export class TabPresenter implements ITabPresenter {
           await this.notifyWindowTabsUpdate(windowId)
         }
       }
+    }
+  }
+
+  registerFloatingWindow(webContentsId: number, webContents: Electron.WebContents): void {
+    try {
+      logger.info(`TabPresenter: Registering floating window as virtual tab, ID: ${webContentsId}`)
+      if (this.tabs.has(webContentsId)) {
+        console.warn(`TabPresenter: Tab ${webContentsId} already exists, skipping registration`)
+        return
+      }
+      const virtualView = {
+        webContents: webContents,
+        setVisible: () => {},
+        setBounds: () => {},
+        getBounds: () => ({ x: 0, y: 0, width: 400, height: 600 })
+      } as any
+      this.webContentsToTabId.set(webContentsId, webContentsId)
+      this.tabs.set(webContentsId, virtualView)
+      logger.info(
+        `TabPresenter: Virtual tab registered successfully for floating window ${webContentsId}`
+      )
+    } catch (error) {
+      console.error('TabPresenter: Failed to register floating window:', error)
+    }
+  }
+
+  unregisterFloatingWindow(webContentsId: number): void {
+    try {
+      logger.info(`TabPresenter: Unregistering floating window virtual tab, ID: ${webContentsId}`)
+      this.webContentsToTabId.delete(webContentsId)
+      this.tabs.delete(webContentsId)
+      logger.info(
+        `TabPresenter: Virtual tab unregistered successfully for floating window ${webContentsId}`
+      )
+    } catch (error) {
+      console.error('TabPresenter: Failed to unregister floating window:', error)
     }
   }
 }

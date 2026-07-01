@@ -40,15 +40,21 @@ export class TrayPresenter {
     const labels = getContextMenuLabels(locale)
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: labels.open || '打开/隐藏(Command/Ctrl+O)',
+        label: labels.open || '打开/隐藏',
         click: () => {
           eventBus.sendToMain(TRAY_EVENTS.SHOW_HIDDEN_WINDOW)
         }
       },
       {
-        label: labels.quit || '退出',
+        label: labels.checkForUpdates || '检查更新',
         click: () => {
-          app.quit()
+          eventBus.sendToMain(TRAY_EVENTS.CHECK_FOR_UPDATES)
+        }
+      },
+      {
+        label: labels.quit || '退出',
+        click: async () => {
+          app.quit() // Exit trigger: tray menu
         }
       }
     ])

@@ -39,7 +39,12 @@
     "jsonInputPlaceholder": "داده‌ها را در قالب JSON وارد کنید",
     "type": "نوع",
     "annotations": "حاشیه‌نویسی",
-    "invalidJsonFormat": "قالب JSON نادرست است"
+    "invalidJsonFormat": "قالب JSON نادرست است",
+    "allowedValues": "مقادیر مجاز",
+    "arrayItemValues": "مقادیر عنصر آرایه",
+    "acpManagedHint": "ابزارهای MCP توسط \"ACP Agent\" مدیریت می شوند",
+    "acpServersNone": "Agent با MCP پیکربندی نشده است",
+    "acpServersSelected": "{count} MCP انتخاب شد"
   },
   "addServer": "افزودن کارساز",
   "addServerDialog": {
@@ -79,7 +84,9 @@
   "serverForm": {
     "add": "افزودن به",
     "args": "داده‌ها",
-    "argsPlaceholder": "داده‌ها را با فاصله وارد کنید",
+    "argsPlaceholder": "هر خط یک آرگومان وارد کنید",
+    "addArg": "افزودن آرگومان",
+    "argPlaceholder": "مقدار آرگومان را وارد کنید",
     "argsRequired": "داده‌ها نمی‌توانند خالی باشند",
     "autoApprove": "پذیرش خودکار",
     "autoApproveAll": "همه",
@@ -152,17 +159,9 @@
       "desc": "دیپ‌چت را قادر به مدیریت پرونده‌های محلی کنید",
       "name": "سامانه پرونده"
     },
-    "imageServer": {
-      "desc": "پس از روشن کردن، هر مدل در دیپ‌چت می‌تواند تصاویر را درک کرده و بسازد.",
-      "name": "خدمات تصویر"
-    },
     "braveSearch": {
       "desc": "رابط جستجوی بریو https://brave.com/search/api/",
       "name": "جستجوی بریو"
-    },
-    "powerpack": {
-      "desc": "امکانات بهبودیافته‌ای مانند پرس‌وجوی زمان، دریافت داده‌های وب و اجرای ایمن کد را برای هر مدل بزرگ فراهم می‌کند تا مدل دارای امکانات قوی‌تر و دقیق‌تر برای کسب اطلاعات باشد.",
-      "name": "جعبه‌ابزار بهبود"
     },
     "difyKnowledge": {
       "desc": "خدمات جستجوی پایگاه دانش دیفای، میتواند محتوای پایگاه دانش دیفای را بازیابی کند",
@@ -191,6 +190,14 @@
     "deepchat-inmemory/conversation-search-server": {
       "name": "جستجوی تاریخچه گفت‌وگو",
       "desc": "خدمات جستجوی تاریخچه گفت‌وگوی داخلی دیپ‌چت، میتواند در تاریخچه و محتوای پیام‌های گفت‌وگو جستجو کند"
+    },
+    "builtinKnowledge": {
+      "desc": "خدمات جستجوی پایه دانش داخلی Deepchat ، که می تواند محتوای پایگاه دانش داخلی Deepchat را جستجو کند",
+      "name": "جستجوی پایگاه دانش داخلی"
+    },
+    "deepchat/apple-server": {
+      "desc": "بگذارید مدل عملکردهای سیستم MACOS مانند تقویم ، مخاطبین ، ایمیل ها ، نقشه ها ، یادداشت ها ، یادآوری ها و سایر سیستم ها را کار کند",
+      "name": "دستیار سیستم MACOS"
     }
   },
   "prompts": {
@@ -198,6 +205,7 @@
     "noDescription": "هنوز توضیحی نیست",
     "selectPrompt": "اینجا نمایش داده می‌شود",
     "parameters": "داده‌های دستور",
+    "required": "لازم",
     "input": "داده‌های ورودی",
     "runningPrompt": "دستورکار در حال دریافت است",
     "executeButton": "برای دریافت اینحا بزنید",
@@ -227,12 +235,75 @@
     "resetToDefaultFailed": "بازنشانی به کارسازهای پیش‌فرض ناموفق بود",
     "toggleServerFailed": "تغییر حالت کارساز {serverName} ناموفق بود",
     "loadToolsFailed": "بارگذاری ابزارها ناموفق بود",
+    "loadClientsFailed": "بارگذاری کلاینت‌های MCP ناموفق بود",
     "loadPromptsFailed": "بارگذاری دستورکار‌ها ناموفق بود",
     "loadResourcesFailed": "بارگذاری منابع ناموفق بود",
     "callToolFailed": "فراخوانی ابزار {toolName} ناموفق بود",
     "toolCallError": "خطای فراخوانی ابزار: {error}",
     "mcpDisabled": "MCP خاموش است",
     "getPromptFailed": "دریافت دستورکار ناموفق بود",
-    "readResourceFailed": "خواندن منبع ناموفق بود"
+    "readResourceFailed": "خواندن منبع ناموفق بود",
+    "promptNotFound": "دستورکار '{name}' یافت نشد",
+    "emptyPromptContent": "درخواست '{name}' خالی است",
+    "missingParameters": "پارامترهای از دست رفته: {params}",
+    "invalidParameters": "پارامترهای نامعتبر: {params}"
+  },
+  "market": {
+    "apiKeyPlaceholder": "کلید API MCPROUTER را وارد کنید",
+    "apiKeyRequiredDesc": "لطفاً قبل از نصب ، ابتدا کلید API McProuter را پر کنید",
+    "apiKeyRequiredTitle": "به کلید API نیاز دارد",
+    "browseBuiltin": "مرور بازار داخلی MCP",
+    "builtinTitle": "بازار MCP",
+    "empty": "هنوز هیچ خدمتی وجود ندارد",
+    "install": "نصب کردن",
+    "installFailed": "نصب انجام نشد",
+    "installSuccess": "نصب با موفقیت",
+    "installed": "نصب شده",
+    "keyGuide": "کلید را دریافت کنید",
+    "keyHelpEnd": "پس از درخواست کلید API ، کادر ورودی را در بالا پر کنید",
+    "keyHelpText": "لطفا ابتدا وارد شوید",
+    "loadMore": "بار بیشتر",
+    "noMore": "نه بیشتر",
+    "poweredBy": "نیرو توسط McProuter",
+    "pullDownToLoad": "برای بارگیری بیشتر به پایین بیاید"
+  },
+  "sampling": {
+    "approve": "موافق",
+    "confirming": "در حال تایید...",
+    "confirm": "ارسال پاسخ مدل",
+    "contentType": {
+      "audio": "صوتی",
+      "image": "تصویر",
+      "text": "متن"
+    },
+    "description": "مشاهده زمینه‌های به اشتراک‌گذاری شده توسط سرور MCP و انتخاب برای تولید پاسخ یا خیر.",
+    "imageAlt": "تصویر {شاخص}",
+    "messagesTitle": "متن گفتگو",
+    "noModels": "هیچ مدل واجد شرایطی فعال نشده است.\nبرای ادامه، مدل‌های مناسب را در «تنظیمات» فعال کنید.",
+    "autoApproveIn": "تأیید خودکار با استفاده از {model} پس از {secons} ثانیه",
+    "autoApproving": "درخواست نمونه MCP از {server}",
+    "maxTokensInfo": "حداکثر طول پاسخ: {maxTokens} توکن",
+    "noVisionModels": "هیچ مدلی با قابلیت بصری فعال نیست.\nبرای ادامه، مدل بصری را در تنظیمات فعال کنید.",
+    "preference": {
+      "cost": "اولویت هزینه",
+      "hints": "نکات مدل",
+      "intelligence": "اول هوش",
+      "speed": "اولویت سرعت"
+    },
+    "preferencesTitle": "ترجیح مدل",
+    "reject": "رد کردن",
+    "respondWith": "مدل پاسخگویی:",
+    "reviewRequest": "جزئیات را بررسی کنید",
+    "selectModel": "مدل را انتخاب کنید",
+    "selectedModelLabel": "با استفاده از {model} ({provider}) پاسخ دهید",
+    "sendResponse": "ارسال پاسخ",
+    "sessionActive": "جلسه فعال - درخواست به طور خودکار تأیید می شود",
+    "systemPrompt": "اعلان سیستم",
+    "title": "درخواست نمونه از {server}",
+    "unknownHint": "درخواست بی نام",
+    "unknownMime": "نوع MIME نامشخص",
+    "unknownServer": "سرور ناشناخته",
+    "unsupportedMessage": "این نوع محتوا پشتیبانی نمی شود.",
+    "visionWarning": "مدل انتخاب شده از ورودی بصری پشتیبانی نمی کند.\nلطفاً قبل از ادامه، یک مدل با قابلیت بصری انتخاب کنید."
   }
 }

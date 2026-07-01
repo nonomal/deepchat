@@ -1,8 +1,8 @@
 {
   "title": "MCP设置",
-  "description": "管理和配置MCP（Model Control Protocol）服务器和工具",
+  "description": "管理和配置MCP（Model Context Protocol）服务器和工具",
   "enabledTitle": "启用MCP",
-  "enabledDescription": "启用或禁用MCP功能和工具",
+  "enabledDescription": "启用后，已启用的服务会自动启动",
   "enableToAccess": "请先启用MCP以访问配置选项",
   "errors": {
     "loadConfigFailed": "加载MCP配置失败",
@@ -16,13 +16,18 @@
     "resetToDefaultFailed": "恢复默认服务器失败",
     "toggleServerFailed": "切换服务器 {serverName} 状态失败",
     "loadToolsFailed": "加载工具失败",
+    "loadClientsFailed": "加载 MCP 客户端失败",
     "loadPromptsFailed": "加载提示模板失败",
     "loadResourcesFailed": "加载资源失败",
     "callToolFailed": "调用工具 {toolName} 失败",
     "toolCallError": "工具调用错误: {error}",
     "mcpDisabled": "MCP功能已禁用",
     "getPromptFailed": "获取提示模板失败",
-    "readResourceFailed": "读取资源失败"
+    "readResourceFailed": "读取资源失败",
+    "promptNotFound": "未找到提示模板 '{name}'",
+    "emptyPromptContent": "'{name}' Prompt 是空的",
+    "missingParameters": "缺少参数: {params}",
+    "invalidParameters": "无效参数: {params}"
   },
   "tabs": {
     "servers": "服务器",
@@ -58,7 +63,9 @@
     "commandPlaceholder": "输入命令",
     "commandRequired": "命令不能为空",
     "args": "参数",
-    "argsPlaceholder": "输入参数，用空格分隔",
+    "argsPlaceholder": "每行一个参数",
+    "addArg": "添加参数",
+    "argPlaceholder": "输入参数值",
     "argsRequired": "参数不能为空",
     "env": "环境变量",
     "envPlaceholder": "输入JSON格式的环境变量",
@@ -153,11 +160,16 @@
     "enableToUse": "请先启用MCP以使用工具",
     "enabled": "启用MCP",
     "enabledDescription": "启用MCP功能以使用工具调用",
+    "acpManagedHint": "MCP 工具由「ACP Agent」管理",
+    "acpServersSelected": "已选择 {count} 个 MCP",
+    "acpServersNone": "该 Agent 未配置 MCP",
     "jsonInputPlaceholder": "输入JSON格式的参数",
     "type": "类型",
     "annotations": "注解",
     "empty": "空",
-    "invalidJsonFormat": "JSON格式不正确"
+    "invalidJsonFormat": "JSON格式不正确",
+    "allowedValues": "允许的值",
+    "arrayItemValues": "数组元素值"
   },
   "inmemory": {
     "bochaSearch": {
@@ -172,17 +184,9 @@
       "name": "Artifacts",
       "desc": "让你的 DeepChat 输出的多样化的 Artifacts 内容"
     },
-    "imageServer": {
-      "name": "图片服务",
-      "desc": "开启后 DeepChat 中任意模型都能看懂图片，能生成图片"
-    },
     "braveSearch": {
       "name": "Brave搜索",
       "desc": "Brave搜索 API https://brave.com/search/api/"
-    },
-    "powerpack": {
-      "name": "增强工具包",
-      "desc": "为任意大模型提供时间查询、网页信息获取和安全的代码执行等增强能力，让模型拥有更强大和准确的信息获取能力"
     },
     "difyKnowledge": {
       "name": "Dify知识库检索",
@@ -195,6 +199,10 @@
     "fastGptKnowledge": {
       "name": "FastGPT知识库检索",
       "desc": "FastGPT知识库检索服务，可以对FastGPT知识库内容进行检索"
+    },
+    "builtinKnowledge": {
+      "name": "内置知识库检索",
+      "desc": "DeepChat内置知识库检索服务，可以对DeepChat内置知识库内容进行检索"
     },
     "deepchat-inmemory/custom-prompts-server": {
       "name": "自定义提示词",
@@ -211,6 +219,10 @@
     "deepchat-inmemory/conversation-search-server": {
       "name": "对话历史搜索",
       "desc": "DeepChat内置对话历史搜索服务，可搜索历史对话记录和消息内容"
+    },
+    "deepchat/apple-server": {
+      "name": "macOS系统助手",
+      "desc": "让模型能操作macOS的日历、联系人、邮件、地图、备忘录、提醒事项等系统功能"
     }
   },
   "prompts": {
@@ -218,6 +230,7 @@
     "noDescription": "暂无描述",
     "selectPrompt": "此处展示选中的Prompt",
     "parameters": "Prompt 参数",
+    "required": "必需",
     "input": "输入参数",
     "runningPrompt": "Prompt 获取中",
     "executeButton": "点击获取",
@@ -234,5 +247,63 @@
     "loadContent": "获取 Resource 内容",
     "pleaseSelect": "点击获取展示Resources详情",
     "dialogDescription": "浏览和查看MCP服务器提供的资源"
+  },
+  "market": {
+    "browseBuiltin": "浏览内置 MCP 市场",
+    "builtinTitle": "MCP 市场",
+    "poweredBy": "Powered by MCPRouter",
+    "keyGuide": "获取密钥",
+    "keyHelpText": "请先到",
+    "keyHelpEnd": "申请 API Key 后填写到上方输入框",
+    "apiKeyPlaceholder": "输入 MCPRouter API Key",
+    "apiKeyRequiredTitle": "需要 API Key",
+    "apiKeyRequiredDesc": "请先填写 MCPRouter API Key 后再安装",
+    "install": "安装",
+    "installed": "已安装",
+    "installSuccess": "安装成功",
+    "installFailed": "安装失败",
+    "noMore": "没有更多了",
+    "empty": "暂无服务",
+    "loadMore": "加载更多",
+    "pullDownToLoad": "继续下拉加载更多"
+  },
+  "sampling": {
+    "approve": "同意",
+    "confirming": "确认中...",
+    "confirm": "发送模型响应",
+    "sendResponse": "发送响应",
+    "selectModel": "选择模型",
+    "respondWith": "响应模型：",
+    "maxTokensInfo": "最大响应长度：{maxTokens} tokens",
+    "contentType": {
+      "audio": "音频",
+      "image": "图片",
+      "text": "文本"
+    },
+    "description": "查看 MCP 服务器共享的上下文并选择是否生成响应。",
+    "imageAlt": "图片{索引}",
+    "messagesTitle": "对话上下文",
+    "noModels": "没有启用符合条件的模型。\n在\"设置\"中启用适用的模型以继续。",
+    "noVisionModels": "未启用任何具有视觉功能的模型。\n在\"设置\"中启用视觉模型以继续。",
+    "preference": {
+      "cost": "成本优先",
+      "hints": "模型提示",
+      "intelligence": "情报优先",
+      "speed": "速度优先"
+    },
+    "preferencesTitle": "模型偏好",
+    "reject": "拒绝",
+    "selectedModelLabel": "使用 {model} ({provider}) 进行响应",
+    "systemPrompt": "系统提示",
+    "title": "来自 {server} 的采样请求",
+    "unknownHint": "未命名提示",
+    "unknownMime": "未知的 MIME 类型",
+    "unknownServer": "未知服务器",
+    "unsupportedMessage": "不支持此内容类型。",
+    "visionWarning": "所选模型不支持视觉输入。\n请先选择一个具有视觉功能的模型，然后再继续。",
+    "autoApproving": "来自 {server} 的 MCP 采样请求",
+    "autoApproveIn": "{seconds}秒后自动使用 {model} 批准",
+    "reviewRequest": "查看详情",
+    "sessionActive": "会话活跃 - 请求将被自动批准"
   }
 }

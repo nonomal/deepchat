@@ -1,18 +1,44 @@
-import { app, globalShortcut } from 'electron'
+import logger from '@shared/logger'
+import {
+  app,
+  globalShortcut,
+  Menu,
+  type BrowserWindow,
+  type MenuItemConstructorOptions
+} from 'electron'
 
 import { presenter } from '.'
 import { SHORTCUT_EVENTS, TRAY_EVENTS } from '../events'
-import { eventBus, SendTarget } from '../eventbus'
-import {
-  CommandKey,
-  defaultShortcutKey,
-  ShortcutKeySetting
-} from './configPresenter/shortcutKeySettings'
-import { ConfigPresenter } from './configPresenter'
+import { eventBus } from '../eventbus'
+import { defaultShortcutKey, ShortcutKeySetting } from './configPresenter/shortcutKeySettings'
+import { IConfigPresenter, IShortcutPresenter } from '@shared/presenter'
+import { getContextMenuLabels, type TranslationMap } from '@shared/i18n'
+import { is } from '@electron-toolkit/utils'
+import { publishDeepchatEvent } from '@/routes/publishDeepchatEvent'
 
-export class ShortcutPresenter {
-  private isActive: boolean = false
-  private configPresenter: ConfigPresenter
+const defaultMenuLabels: TranslationMap = {
+  file: 'File',
+  edit: 'Edit',
+  view: 'View',
+  window: 'Window',
+  settings: 'Settings...',
+  newConversation: 'New Conversation',
+  newWindow: 'New Window',
+  closeWindow: 'Close Window',
+  quickSearch: 'Quick Search',
+  toggleSidebar: 'Toggle Sidebar',
+  toggleWorkspace: 'Toggle Workspace',
+  cleanChatHistory: 'Clear Chat History',
+  deleteConversation: 'Delete Conversation',
+  zoomIn: 'Zoom In',
+  zoomOut: 'Zoom Out',
+  resetZoom: 'Actual Size',
+  quit: 'Quit',
+  showHide: 'Show/Hide DeepChat'
+}
+
+export class ShortcutPresenter implements IShortcutPresenter {
+  private configPresenter: IConfigPresenter
   private shortcutKeys: ShortcutKeySetting = {
     ...defaultShortcutKey
   }
@@ -21,229 +47,268 @@ export class ShortcutPresenter {
    * 创建一个新的 ShortcutPresenter 实例
    * @param shortKey 可选的自定义快捷键设置
    */
-  constructor(configPresenter: ConfigPresenter) {
+  constructor(configPresenter: IConfigPresenter) {
     this.configPresenter = configPresenter
   }
 
   registerShortcuts(): void {
-    if (this.isActive) return
-    console.log('reg shortcuts')
+    logger.info('reg shortcuts')
+    this.refreshShortcutKeys()
+    this.installApplicationMenu()
+    this.registerSystemShortcuts()
+  }
 
+  private refreshShortcutKeys(): void {
     this.shortcutKeys = {
       ...defaultShortcutKey,
       ...this.configPresenter.getShortcutKey()
     }
+  }
 
-    // Command+N 或 Ctrl+N 创建新会话
-    globalShortcut.register(this.shortcutKeys.NewConversation, async () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        presenter.windowPresenter.sendToActiveTab(
-          focusedWindow.id,
-          SHORTCUT_EVENTS.CREATE_NEW_CONVERSATION
-        )
-      }
-    })
+  private getLabels(): TranslationMap {
+    const locale =
+      this.configPresenter.getLanguage?.() ||
+      app.getLocale?.() ||
+      app.getSystemLocale?.() ||
+      'en-US'
+    const localizedLabels = getContextMenuLabels(locale)
 
-    // Command+Shift+N 或 Ctrl+Shift+N 创建新窗口
-    globalShortcut.register(this.shortcutKeys.NewWindow, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        eventBus.sendToMain(SHORTCUT_EVENTS.CREATE_NEW_WINDOW)
-      }
-    })
+    return {
+      ...defaultMenuLabels,
+      ...localizedLabels
+    }
+  }
 
-    // Command+T 或 Ctrl+T 在当前窗口创建新标签页
-    globalShortcut.register(this.shortcutKeys.NewTab, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        eventBus.sendToMain(SHORTCUT_EVENTS.CREATE_NEW_TAB, focusedWindow.id)
-      }
-    })
+  private accelerator(shortcut: string | undefined): string | undefined {
+    return shortcut && shortcut.trim().length > 0 ? shortcut : undefined
+  }
 
-    // Command+W 或 Ctrl+W 关闭当前标签页
-    globalShortcut.register(this.shortcutKeys.CloseTab, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        eventBus.sendToMain(SHORTCUT_EVENTS.CLOSE_CURRENT_TAB, focusedWindow.id)
-      }
-    })
+  private createCommandItem(
+    label: string,
+    accelerator: string | undefined,
+    click: () => void
+  ): MenuItemConstructorOptions {
+    return {
+      label,
+      accelerator: this.accelerator(accelerator),
+      click
+    }
+  }
 
-    // Command+Q 或 Ctrl+Q 退出程序
-    globalShortcut.register(this.shortcutKeys.Quit, () => {
-      app.quit()
-    })
+  private installApplicationMenu(): void {
+    const labels = this.getLabels()
+    const template: MenuItemConstructorOptions[] = []
 
-    // Command+= 或 Ctrl+= 放大字体
-    globalShortcut.register(this.shortcutKeys.ZoomIn, () => {
-      eventBus.send(SHORTCUT_EVENTS.ZOOM_IN, SendTarget.ALL_WINDOWS)
-    })
-
-    // Command+- 或 Ctrl+- 缩小字体
-    globalShortcut.register(this.shortcutKeys.ZoomOut, () => {
-      eventBus.send(SHORTCUT_EVENTS.ZOOM_OUT, SendTarget.ALL_WINDOWS)
-    })
-
-    // Command+0 或 Ctrl+0 重置字体大小
-    globalShortcut.register(this.shortcutKeys.ZoomResume, () => {
-      eventBus.send(SHORTCUT_EVENTS.ZOOM_RESUME, SendTarget.ALL_WINDOWS)
-    })
-
-    // Command+, 或 Ctrl+, 打开设置
-    globalShortcut.register(this.shortcutKeys.GoSettings, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        presenter.windowPresenter.sendToActiveTab(focusedWindow.id, SHORTCUT_EVENTS.GO_SETTINGS)
-      }
-    })
-
-    // Command+L 或 Ctrl+L 清除聊天历史
-    globalShortcut.register(this.shortcutKeys.CleanChatHistory, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        presenter.windowPresenter.sendToActiveTab(
-          focusedWindow.id,
-          SHORTCUT_EVENTS.CLEAN_CHAT_HISTORY
-        )
-      }
-    })
-
-    // Command+D 或 Ctrl+D 清除聊天历史
-    globalShortcut.register(this.shortcutKeys.DeleteConversation, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        presenter.windowPresenter.sendToActiveTab(
-          focusedWindow.id,
-          SHORTCUT_EVENTS.DELETE_CONVERSATION
-        )
-      }
-    })
-
-    // 添加标签页切换相关快捷键
-
-    // Command+Tab 或 Ctrl+Tab 切换到下一个标签页
-    globalShortcut.register(this.shortcutKeys.SwitchNextTab, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        this.switchToNextTab(focusedWindow.id)
-      }
-    })
-
-    // Ctrl+Shift+Tab 切换到上一个标签页
-    globalShortcut.register(this.shortcutKeys.SwitchPrevTab, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        this.switchToPreviousTab(focusedWindow.id)
-      }
-    })
-
-    // 注册标签页数字快捷键 (1-8)
-    for (let i = 1; i <= 8; i++) {
-      globalShortcut.register(`${CommandKey}+${i}`, () => {
-        const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-        if (focusedWindow?.isFocused()) {
-          this.switchToTabByIndex(focusedWindow.id, i - 1) // 索引从0开始
-        }
+    if (process.platform === 'darwin') {
+      template.push({
+        label: app.getName(),
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          this.createCommandItem(labels.settings, this.shortcutKeys.GoSettings, () =>
+            this.openSettings()
+          ),
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          this.createCommandItem(labels.quit, this.shortcutKeys.Quit, () => app.quit())
+        ]
       })
     }
 
-    // Command+9 或 Ctrl+9 切换到最后一个标签页
-    globalShortcut.register(this.shortcutKeys.SwtichToLastTab, () => {
-      const focusedWindow = presenter.windowPresenter.getFocusedWindow()
-      if (focusedWindow?.isFocused()) {
-        this.switchToLastTab(focusedWindow.id)
+    template.push(
+      {
+        label: labels.file,
+        submenu: [
+          this.createCommandItem(labels.newConversation, this.shortcutKeys.NewConversation, () =>
+            this.sendChatWindowShortcut(SHORTCUT_EVENTS.CREATE_NEW_CONVERSATION)
+          ),
+          this.createCommandItem(labels.newWindow, this.shortcutKeys.NewWindow, () =>
+            eventBus.sendToMain(SHORTCUT_EVENTS.CREATE_NEW_WINDOW)
+          ),
+          { type: 'separator' },
+          this.createCommandItem(labels.closeWindow, this.shortcutKeys.CloseWindow, () =>
+            this.closeFocusedWindow()
+          ),
+          ...(process.platform === 'darwin'
+            ? []
+            : [
+                { type: 'separator' as const },
+                this.createCommandItem(labels.quit, this.shortcutKeys.Quit, () => app.quit())
+              ])
+        ]
+      },
+      {
+        label: labels.edit,
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { type: 'separator' },
+          { role: 'selectAll' }
+        ]
+      },
+      {
+        label: labels.view,
+        submenu: [
+          this.createCommandItem(labels.quickSearch, this.shortcutKeys.QuickSearch, () =>
+            this.openQuickSearch()
+          ),
+          this.createCommandItem(labels.toggleSidebar, this.shortcutKeys.ToggleSidebar, () =>
+            this.sendFocusedChatWindowShortcut(SHORTCUT_EVENTS.TOGGLE_SIDEBAR)
+          ),
+          this.createCommandItem(labels.toggleWorkspace, this.shortcutKeys.ToggleWorkspace, () =>
+            this.sendFocusedChatWindowShortcut(SHORTCUT_EVENTS.TOGGLE_WORKSPACE)
+          ),
+          { type: 'separator' },
+          this.createCommandItem(labels.cleanChatHistory, this.shortcutKeys.CleanChatHistory, () =>
+            this.sendFocusedChatWindowShortcut(SHORTCUT_EVENTS.CLEAN_CHAT_HISTORY)
+          ),
+          this.createCommandItem(
+            labels.deleteConversation,
+            this.shortcutKeys.DeleteConversation,
+            () => this.sendFocusedChatWindowShortcut(SHORTCUT_EVENTS.DELETE_CONVERSATION)
+          ),
+          { type: 'separator' },
+          this.createCommandItem(labels.zoomIn, this.shortcutKeys.ZoomIn, () => {
+            eventBus.sendToMain(SHORTCUT_EVENTS.ZOOM_IN)
+            publishDeepchatEvent('appRuntime.shortcutRequested', { action: 'zoomIn' })
+          }),
+          this.createCommandItem(labels.zoomOut, this.shortcutKeys.ZoomOut, () => {
+            eventBus.sendToMain(SHORTCUT_EVENTS.ZOOM_OUT)
+            publishDeepchatEvent('appRuntime.shortcutRequested', { action: 'zoomOut' })
+          }),
+          this.createCommandItem(labels.resetZoom, this.shortcutKeys.ZoomResume, () => {
+            eventBus.sendToMain(SHORTCUT_EVENTS.ZOOM_RESUME)
+            publishDeepchatEvent('appRuntime.shortcutRequested', { action: 'zoomResume' })
+          }),
+          ...(is.dev
+            ? [
+                { type: 'separator' as const },
+                { role: 'reload' as const },
+                { role: 'forceReload' as const },
+                { role: 'toggleDevTools' as const }
+              ]
+            : [])
+        ]
+      },
+      {
+        label: labels.window,
+        role: 'windowMenu'
       }
-    })
+    )
 
-    this.showHideWindow()
-
-    this.isActive = true
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   }
 
-  // 切换到下一个标签页
-  private async switchToNextTab(windowId: number): Promise<void> {
-    try {
-      const tabsData = await presenter.tabPresenter.getWindowTabsData(windowId)
-      if (!tabsData || tabsData.length <= 1) return // 只有一个或没有标签页时不执行切换
+  private getFocusedWindow(): BrowserWindow | undefined {
+    const focusedWindow = presenter.windowPresenter.getFocusedWindow()
+    return focusedWindow?.isFocused() ? focusedWindow : undefined
+  }
 
-      // 找到当前活动标签的索引
-      const activeTabIndex = tabsData.findIndex((tab) => tab.isActive)
-      if (activeTabIndex === -1) return
-
-      // 计算下一个标签页的索引（循环到第一个）
-      const nextTabIndex = (activeTabIndex + 1) % tabsData.length
-
-      // 切换到下一个标签页
-      await presenter.tabPresenter.switchTab(tabsData[nextTabIndex].id)
-    } catch (error) {
-      console.error('切换到下一个标签页失败:', error)
+  private getFocusedChatWindow(): BrowserWindow | undefined {
+    const focusedWindow = this.getFocusedWindow()
+    if (!focusedWindow) {
+      return undefined
     }
+
+    const isChatWindow = presenter.windowPresenter
+      .getAllWindows()
+      .some((window) => window.id === focusedWindow.id)
+
+    return isChatWindow ? focusedWindow : undefined
   }
 
-  // 切换到上一个标签页
-  private async switchToPreviousTab(windowId: number): Promise<void> {
-    try {
-      const tabsData = await presenter.tabPresenter.getWindowTabsData(windowId)
-      if (!tabsData || tabsData.length <= 1) return // 只有一个或没有标签页时不执行切换
-
-      // 找到当前活动标签的索引
-      const activeTabIndex = tabsData.findIndex((tab) => tab.isActive)
-      if (activeTabIndex === -1) return
-
-      // 计算上一个标签页的索引（循环到最后一个）
-      const previousTabIndex = (activeTabIndex - 1 + tabsData.length) % tabsData.length
-
-      // 切换到上一个标签页
-      await presenter.tabPresenter.switchTab(tabsData[previousTabIndex].id)
-    } catch (error) {
-      console.error('切换到上一个标签页失败:', error)
+  private getPrimaryChatWindow(): BrowserWindow | undefined {
+    const focusedChatWindow = this.getFocusedChatWindow()
+    if (focusedChatWindow) {
+      return focusedChatWindow
     }
+
+    const mainWindow = presenter.windowPresenter.mainWindow
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
   }
 
-  // 切换到指定索引的标签页
-  private async switchToTabByIndex(windowId: number, index: number): Promise<void> {
-    try {
-      const tabsData = await presenter.tabPresenter.getWindowTabsData(windowId)
-      if (!tabsData || index >= tabsData.length) return // 索引超出范围
-
-      // 切换到指定索引的标签页
-      await presenter.tabPresenter.switchTab(tabsData[index].id)
-    } catch (error) {
-      console.error(`切换到索引 ${index} 的标签页失败:`, error)
+  private sendFocusedChatWindowShortcut(channel: string): void {
+    const focusedWindow = this.getFocusedChatWindow()
+    if (!focusedWindow) {
+      return
     }
+
+    void presenter.windowPresenter.sendToWebContents(focusedWindow.webContents.id, channel)
   }
 
-  // 切换到最后一个标签页
-  private async switchToLastTab(windowId: number): Promise<void> {
-    try {
-      const tabsData = await presenter.tabPresenter.getWindowTabsData(windowId)
-      if (!tabsData || tabsData.length === 0) return
-
-      // 切换到最后一个标签页
-      await presenter.tabPresenter.switchTab(tabsData[tabsData.length - 1].id)
-    } catch (error) {
-      console.error('切换到最后一个标签页失败:', error)
+  private sendChatWindowShortcut(channel: string): void {
+    const targetWindow = this.getPrimaryChatWindow()
+    if (!targetWindow) {
+      return
     }
+
+    presenter.windowPresenter.show(targetWindow.id, true)
+    void presenter.windowPresenter.sendToWebContents(targetWindow.webContents.id, channel)
   }
 
-  // Command+O 或 Ctrl+O 显示/隐藏窗口
-  private async showHideWindow() {
-    // Command+O 或 Ctrl+O 显示/隐藏窗口
-    globalShortcut.register(this.shortcutKeys.ShowHideWindow, () => {
-      eventBus.sendToMain(TRAY_EVENTS.SHOW_HIDDEN_WINDOW)
-    })
+  private openQuickSearch(): void {
+    const focusedWindow = this.getFocusedWindow()
+    const settingsWindowId = presenter.windowPresenter.getSettingsWindowId()
+    const targetWindow =
+      focusedWindow && focusedWindow.id !== settingsWindowId
+        ? focusedWindow
+        : presenter.windowPresenter.mainWindow
+
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return
+    }
+
+    presenter.windowPresenter.show(targetWindow.id, true)
+    void presenter.windowPresenter.sendToWebContents(
+      targetWindow.webContents.id,
+      SHORTCUT_EVENTS.TOGGLE_SPOTLIGHT
+    )
+  }
+
+  private closeFocusedWindow(): void {
+    const focusedWindow = this.getFocusedWindow()
+    if (!focusedWindow) {
+      return
+    }
+
+    if (focusedWindow.id === presenter.windowPresenter.getSettingsWindowId()) {
+      presenter.windowPresenter.closeSettingsWindow()
+      return
+    }
+
+    presenter.windowPresenter.close(focusedWindow.id)
+  }
+
+  private openSettings(): void {
+    eventBus.sendToMain(SHORTCUT_EVENTS.GO_SETTINGS, this.getFocusedWindow()?.id)
+  }
+
+  private registerSystemShortcuts(): void {
+    globalShortcut.unregisterAll()
+
+    if (this.shortcutKeys.ShowHideWindow) {
+      globalShortcut.register(this.shortcutKeys.ShowHideWindow, () => {
+        eventBus.sendToMain(TRAY_EVENTS.SHOW_HIDDEN_WINDOW)
+      })
+    }
   }
 
   unregisterShortcuts(): void {
-    console.log('unreg shortcuts')
-    globalShortcut.unregisterAll()
-
-    // 取消注册显示/隐藏窗口快捷键
-    this.showHideWindow()
-    this.isActive = false
+    logger.info('unreg shortcuts')
+    this.registerSystemShortcuts()
   }
 
   destroy(): void {
-    this.unregisterShortcuts()
+    globalShortcut.unregisterAll()
+    Menu.setApplicationMenu(null)
   }
 }

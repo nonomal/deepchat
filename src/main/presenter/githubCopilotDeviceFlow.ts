@@ -1,5 +1,9 @@
 import { BrowserWindow, shell } from 'electron'
+import { exec } from 'child_process'
 import { presenter } from '@/presenter'
+import logger from '@shared/logger'
+
+const GITHUB_DEVICE_URL = 'https://github.com/login/device'
 
 export interface DeviceFlowConfig {
   clientId: string
@@ -22,36 +26,130 @@ export interface AccessTokenResponse {
   error_description?: string
 }
 
+export interface CopilotTokenResponse {
+  token: string
+  expires_at: number
+  refresh_in?: number
+}
+
+export interface ApiToken {
+  apiKey: string
+  expiresAt: Date
+}
+
+export interface CopilotConfig {
+  oauthToken?: string
+  apiToken?: ApiToken
+}
+
 export class GitHubCopilotDeviceFlow {
   private config: DeviceFlowConfig
   private pollingInterval: NodeJS.Timeout | null = null
+  private oauthToken: string | null = null
 
   constructor(config: DeviceFlowConfig) {
     this.config = config
   }
 
   /**
-   * 启动 Device Flow 认证流程
+   * Start Device Flow authentication process
    */
   async startDeviceFlow(): Promise<string> {
     try {
-      // Step 1: 获取设备验证码
+      // Step 1: Request device code
       const deviceCodeResponse = await this.requestDeviceCode()
 
-      // Step 2: 显示用户验证码并打开浏览器
+      // Step 2: Show user code and open browser
       await this.showUserCodeAndOpenBrowser(deviceCodeResponse)
 
-      // Step 3: 轮询获取访问令牌
+      // Step 3: Poll for access token
       const accessToken = await this.pollForAccessToken(deviceCodeResponse)
 
       return accessToken
     } catch (error) {
+      console.error('[GitHub Copilot] Device flow failed:', error)
+      throw new Error(
+        `Device flow authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      )
+    }
+  }
+
+  /**
+   * 获取 Copilot API token
+   * 使用OAuth token交换Copilot API token
+   */
+  public async getCopilotToken(): Promise<string> {
+    if (!this.oauthToken) {
+      throw new Error('No OAuth token available')
+    }
+
+    // 使用OAuth token从GitHub API获取Copilot token
+    const tokenUrl = 'https://api.github.com/copilot_internal/v2/token'
+
+    try {
+      const response = await fetch(tokenUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.oauthToken}`,
+          Accept: 'application/json',
+          'User-Agent': 'DeepChat/1.0.0'
+        }
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '')
+        throw new Error(
+          `Failed to get Copilot token: ${response.status} ${response.statusText} - ${errorText}`
+        )
+      }
+
+      const data = (await response.json()) as { token: string; expires_at: number }
+      return data.token
+    } catch (error) {
+      console.error('[GitHub Copilot][DeviceFlow] Failed to get Copilot token:', error)
       throw error
     }
   }
 
   /**
-   * Step 1: 请求设备验证码
+   * 检查是否已经有有效的认证状态
+   */
+  public async checkExistingAuth(externalToken?: string): Promise<string | null> {
+    try {
+      // 如果提供了外部 token，使用它
+      if (externalToken) {
+        this.oauthToken = externalToken
+
+        // 尝试获取 API token 来验证认证状态
+        try {
+          await this.getCopilotToken()
+          return this.oauthToken
+        } catch {
+          this.oauthToken = null
+          return null
+        }
+      }
+
+      // 检查内部存储的 token
+      if (this.oauthToken) {
+        // 尝试获取 API token 来验证认证状态
+        try {
+          await this.getCopilotToken()
+          return this.oauthToken!
+        } catch {
+          this.oauthToken = null
+        }
+      }
+
+      return null
+    } catch (error) {
+      console.warn('[GitHub Copilot][DeviceFlow] Error checking existing auth:', error)
+      return null
+    }
+  }
+
+  /**
+   * Step 1: Request device code
    */
   private async requestDeviceCode(): Promise<DeviceCodeResponse> {
     const url = 'https://github.com/login/device/code'
@@ -60,31 +158,38 @@ export class GitHubCopilotDeviceFlow {
       scope: this.config.scope
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'DeepChat/1.0.0'
-      },
-      body: JSON.stringify(body)
-    })
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'DeepChat/1.0.0'
+        },
+        body: JSON.stringify(body)
+      })
 
-    if (!response.ok) {
-      throw new Error(`Failed to request device code: ${response.status} ${response.statusText}`)
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '')
+        throw new Error(
+          `Failed to request device code: ${response.status} ${response.statusText} - ${errorText}`
+        )
+      }
+
+      const data = (await response.json()) as DeviceCodeResponse
+      return data
+    } catch (error) {
+      console.warn(error)
+      throw error
     }
-
-    const data = (await response.json()) as DeviceCodeResponse
-
-    return data
   }
 
   /**
-   * Step 2: 显示用户验证码并打开浏览器
+   * Step 2: Show user code and open browser
    */
   private async showUserCodeAndOpenBrowser(deviceCodeResponse: DeviceCodeResponse): Promise<void> {
     return new Promise((resolve) => {
-      // 创建一个窗口显示用户验证码
+      // Create a window to display user code
       const instructionWindow = new BrowserWindow({
         width: 340,
         height: 320,
@@ -94,7 +199,7 @@ export class GitHubCopilotDeviceFlow {
           contextIsolation: true
         },
         autoHideMenuBar: true,
-        title: 'GitHub Copilot 设备认证',
+        title: 'GitHub Copilot Device Authentication',
         resizable: false,
         minimizable: false,
         maximizable: false
@@ -106,7 +211,7 @@ export class GitHubCopilotDeviceFlow {
         <html>
         <head>
           <meta charset="utf-8">
-          <title>GitHub Copilot 设备认证</title>
+          <title>GitHub Copilot Device Authentication</title>
           <style>
             body {
               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -195,28 +300,49 @@ export class GitHubCopilotDeviceFlow {
         <body>
           <div class="container">
             <div class="logo">🤖</div>
-            <h1>GitHub Copilot 认证</h1>
+            <h1>GitHub Copilot Authentication</h1>
             <p class="instructions">
-              请在浏览器中访问以下地址，并输入验证码：
+              Please visit the following address in your browser and enter the verification code:
+              If the browser doesn't open automatically, please manually visit: https://github.com/login/device
             </p>
             <div class="user-code">${deviceCodeResponse.user_code}</div>
-            <a href="#" class="button" onclick="openBrowser()">打开 GitHub 认证页面</a>
-            <button class="button secondary" onclick="copyCode()">复制验证码</button>
+            <a href="#" class="button" onclick="openBrowser()">Open GitHub Authentication Page</a>
+            <button class="button secondary" onclick="copyCode()">Copy Verification Code</button>
             <p class="footer">
-              验证码将在 ${Math.floor(deviceCodeResponse.expires_in / 60)} 分钟后过期
+              Verification code will expire in ${Math.floor(deviceCodeResponse.expires_in / 60)} minutes
             </p>
           </div>
 
           <script>
-            function openBrowser() {
-              window.electronAPI.openExternal('${deviceCodeResponse.verification_uri}');
+            async function openBrowser() {
+              try {
+                const githubUrl = GITHUB_DEVICE_URL;
+                // Try to copy link to clipboard
+                await window.electronAPI.copyToClipboard(githubUrl);
+
+                // Try to open browser
+                window.electronAPI.openExternal(githubUrl);
+
+                // Show fallback message
+                setTimeout(() => {
+                  const msg = document.createElement('div');
+                  msg.style.fontSize = '12px';
+                  msg.style.color = '#0969da';
+                  msg.style.marginTop = '8px';
+                  msg.innerHTML = 'If the browser did not open automatically, the link has been copied to clipboard. Please paste it into your browser address bar.';
+                  document.querySelector('.footer').appendChild(msg);
+                }, 2000);
+              } catch (error) {
+                console.error('Failed to handle browser open:', error);
+                alert('Please manually visit: ${GITHUB_DEVICE_URL}');
+              }
             }
 
             function copyCode() {
               window.electronAPI.copyToClipboard('${deviceCodeResponse.user_code}');
               const button = event.target;
               const originalText = button.textContent;
-              button.textContent = '已复制!';
+              button.textContent = 'Copied!';
               button.style.background = '#28a745';
               setTimeout(() => {
                 button.textContent = originalText;
@@ -228,33 +354,33 @@ export class GitHubCopilotDeviceFlow {
         </html>
       `
 
-      // 加载HTML内容
+      // Load HTML content
       instructionWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`)
 
-      // 注入API
+      // Inject API
       instructionWindow.webContents.on('dom-ready', () => {
         instructionWindow.webContents.executeJavaScript(`
           window.electronAPI = {
             openExternal: (url) => {
-              // 通过 console.log 发送消息，主进程通过 console-message 事件接收
+              // Send message via console.log, main process receives via console-message event
               console.log(JSON.stringify({ type: 'open-external', url }));
             },
             copyToClipboard: (text) => {
-              // 通过 console.log 发送消息，主进程通过 console-message 事件接收
+              // Send message via console.log, main process receives via console-message event
               console.log(JSON.stringify({ type: 'copy-to-clipboard', text }));
             },
           };
         `)
       })
 
-      // 处理消息
+      // Handle messages
       instructionWindow.webContents.on('ipc-message', (_event, channel, ...args) => {
         if (channel === 'open-external') {
           shell.openExternal(args[0])
         }
       })
 
-      // 监听页面消息
+      // Listen to page messages
       instructionWindow.webContents.on('console-message', (_event, _level, message) => {
         try {
           const msg = typeof message === 'string' ? JSON.parse(message) : message
@@ -265,27 +391,66 @@ export class GitHubCopilotDeviceFlow {
             if (mainWindow) {
               mainWindow.webContents.executeJavaScript(`window.api.copyText('${msg.text}')`)
             }
-
           }
-        } catch (e) {}
+        } catch {
+          // ignore
+        }
       })
 
       instructionWindow.show()
 
-      // 自动打开浏览器
-      setTimeout(() => {
-        shell.openExternal(deviceCodeResponse.verification_uri)
+      // Automatically open browser
+      setTimeout(async () => {
+        try {
+          // Use fixed GitHub device activation page
+          const url = GITHUB_DEVICE_URL
+          logger.info('Attempting to open URL:', url)
+
+          if (process.platform === 'win32') {
+            // First try using explorer command
+            exec(`explorer "${url}"`, (error) => {
+              if (error) {
+                console.error('Explorer command failed:', error)
+                // If explorer fails, try using start command
+                exec(`start "" "${url}"`, (startError) => {
+                  if (startError) {
+                    console.error('Start command failed:', startError)
+                    // Use a safer method for clipboard operations
+                    instructionWindow.webContents.executeJavaScript(`
+                      const shouldCopy = confirm('Cannot automatically open browser. Copy link to clipboard?');
+                      if (shouldCopy) {
+                        // use the exposed Electron API for clipboard access
+                        window.electronAPI.copyToClipboard('${url}');
+                        alert('Link copied to clipboard. Please paste it into your browser address bar.');
+                      } else {
+                        alert('Please manually visit: ${url}');
+                      }
+                    `)
+                  }
+                })
+              }
+            })
+          } else {
+            // Non-Windows systems use default shell.openExternal
+            await shell.openExternal(url)
+          }
+        } catch (error) {
+          console.error('Failed to open browser:', error)
+          instructionWindow.webContents.executeJavaScript(`
+            alert('Cannot automatically open browser. Please manually visit: ${GITHUB_DEVICE_URL}');
+          `)
+        }
       }, 1000)
 
-      // 设置超时关闭窗口
+      // Set timeout to close window
       setTimeout(() => {
         if (!instructionWindow.isDestroyed()) {
           instructionWindow.close()
         }
         resolve()
-      }, 30000) // 30秒后自动关闭
+      }, 30000) // Auto close after 30 seconds
 
-      // 处理窗口关闭
+      // Handle window close
       instructionWindow.on('closed', () => {
         resolve()
       })
@@ -293,18 +458,29 @@ export class GitHubCopilotDeviceFlow {
   }
 
   /**
-   * Step 3: 轮询获取访问令牌
+   * Step 3: Poll for access token
    */
   private async pollForAccessToken(deviceCodeResponse: DeviceCodeResponse): Promise<string> {
     return new Promise((resolve, reject) => {
       const startTime = Date.now()
       const expiresAt = startTime + deviceCodeResponse.expires_in * 1000
       let pollCount = 0
+      let currentInterval = deviceCodeResponse.interval
 
       const poll = async () => {
         pollCount++
 
-        // 检查是否超时
+        if (pollCount > 100) {
+          // 增加最大轮询次数
+          if (this.pollingInterval) {
+            clearInterval(this.pollingInterval)
+            this.pollingInterval = null
+          }
+          reject(new Error('Maximum polling attempts exceeded'))
+          return
+        }
+
+        // Check if timed out
         if (Date.now() >= expiresAt) {
           if (this.pollingInterval) {
             clearInterval(this.pollingInterval)
@@ -330,7 +506,7 @@ export class GitHubCopilotDeviceFlow {
           })
 
           if (!response.ok) {
-            return // 继续轮询
+            return // Continue polling
           }
 
           const data = (await response.json()) as AccessTokenResponse
@@ -338,13 +514,14 @@ export class GitHubCopilotDeviceFlow {
           if (data.error) {
             switch (data.error) {
               case 'authorization_pending':
-                return // 继续轮询
+                return // Continue polling
 
               case 'slow_down':
-                // 增加轮询间隔
+                // Increase polling interval by at least 5 seconds as per OAuth 2.0 spec
+                currentInterval += 5
                 if (this.pollingInterval) {
                   clearInterval(this.pollingInterval)
-                  this.pollingInterval = setInterval(poll, (deviceCodeResponse.interval + 5) * 1000)
+                  this.pollingInterval = setInterval(poll, currentInterval * 1000)
                 }
                 return
 
@@ -353,7 +530,7 @@ export class GitHubCopilotDeviceFlow {
                   clearInterval(this.pollingInterval)
                   this.pollingInterval = null
                 }
-                reject(new Error('Device code expired'))
+                reject(new Error('Device code expired during polling'))
                 return
 
               case 'access_denied':
@@ -361,10 +538,14 @@ export class GitHubCopilotDeviceFlow {
                   clearInterval(this.pollingInterval)
                   this.pollingInterval = null
                 }
-                reject(new Error('User denied access'))
+                reject(new Error('User denied access to GitHub Copilot'))
                 return
 
               default:
+                if (this.pollingInterval) {
+                  clearInterval(this.pollingInterval)
+                  this.pollingInterval = null
+                }
                 reject(new Error(`OAuth error: ${data.error_description || data.error}`))
                 return
             }
@@ -378,19 +559,22 @@ export class GitHubCopilotDeviceFlow {
             resolve(data.access_token)
             return
           }
-        } catch (error) {}
+        } catch {
+          // Continue polling, network errors may be temporary
+          return
+        }
       }
 
-      // 开始轮询
+      // Start polling
       this.pollingInterval = setInterval(poll, deviceCodeResponse.interval * 1000)
 
-      // 立即执行第一次轮询
+      // Execute first poll immediately
       poll()
     })
   }
 
   /**
-   * 停止轮询
+   * Stop polling
    */
   public stopPolling(): void {
     if (this.pollingInterval) {
@@ -398,16 +582,22 @@ export class GitHubCopilotDeviceFlow {
       this.pollingInterval = null
     }
   }
+
+  /**
+   * 清理资源
+   */
+  public dispose(): void {
+    this.stopPolling()
+  }
 }
 
-// GitHub Copilot Device Flow 配置
-export function createGitHubCopilotDeviceFlow(): GitHubCopilotDeviceFlow {
-  // 从环境变量读取 GitHub OAuth 配置
-  const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID
+// GitHub Copilot Device Flow configuration
+export function createGitHubCopilotDeviceFlow(clientIdOverride?: string): GitHubCopilotDeviceFlow {
+  const clientId = clientIdOverride?.trim() || import.meta.env.VITE_GITHUB_CLIENT_ID
 
   if (!clientId) {
     throw new Error(
-      'VITE_GITHUB_CLIENT_ID environment variable is required. Please create a .env file with your GitHub OAuth Client ID.'
+      'GitHub Client ID is required. Please enter it in the Copilot settings input or set VITE_GITHUB_CLIENT_ID in .env.'
     )
   }
 
@@ -416,6 +606,38 @@ export function createGitHubCopilotDeviceFlow(): GitHubCopilotDeviceFlow {
     scope: 'read:user read:org'
   }
 
+  logger.info('[GitHub Copilot][DeviceFlow] Creating device flow with config:', {
+    clientIdConfigured: !!clientId,
+    scope: config.scope
+  })
+
   return new GitHubCopilotDeviceFlow(config)
 }
 
+/**
+ * 创建一个全局的 GitHub Copilot Device Flow 实例
+ */
+let globalDeviceFlowInstance: GitHubCopilotDeviceFlow | null = null
+let globalDeviceFlowClientId: string | null = null
+
+export function getGlobalGitHubCopilotDeviceFlow(
+  clientIdOverride?: string
+): GitHubCopilotDeviceFlow {
+  const effectiveClientId = clientIdOverride?.trim() || import.meta.env.VITE_GITHUB_CLIENT_ID
+
+  if (!globalDeviceFlowInstance || globalDeviceFlowClientId !== effectiveClientId) {
+    globalDeviceFlowInstance?.dispose()
+    globalDeviceFlowInstance = null
+    globalDeviceFlowInstance = createGitHubCopilotDeviceFlow(effectiveClientId)
+    globalDeviceFlowClientId = effectiveClientId || null
+  }
+  return globalDeviceFlowInstance
+}
+
+export function disposeGlobalGitHubCopilotDeviceFlow(): void {
+  if (globalDeviceFlowInstance) {
+    globalDeviceFlowInstance.dispose()
+    globalDeviceFlowInstance = null
+  }
+  globalDeviceFlowClientId = null
+}

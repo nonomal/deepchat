@@ -10,6 +10,7 @@
   "copyFailedDesc": "Failed to copy content to clipboard",
   "copyCode": "Copy Code",
   "copy": "Copy",
+  "copied": "Copied",
   "paste": "Paste",
   "export": "Export",
   "newChat": "New Chat",
@@ -17,6 +18,9 @@
   "cancel": "Cancel",
   "confirm": "Confirm",
   "close": "Close",
+  "open": "Open",
+  "next": "Next",
+  "back": "Back",
   "error": {
     "requestFailed": "Request failed...",
     "createChatFailed": "Failed to create chat",
@@ -39,7 +43,8 @@
     "error502": "Gateway error, the service might be unstable, please try again later",
     "error503": "Service unavailable, the service might be unstable, please try again later",
     "error504": "Request timeout, the service might be unstable or there might be network issues, please check proxy settings and try again",
-    "operationFailed": "Operation failed"
+    "operationFailed": "Operation failed",
+    "invalidQuestionRequest": "Invalid question request"
   },
   "resetDataConfirmTitle": "Reset All Data?",
   "resetDataConfirmDescription": "This will reset all your data to default settings. This action cannot be undone.",
@@ -66,9 +71,58 @@
   "collapse": "Collapse",
   "expand": "Expand",
   "image": "picture",
+  "noContent": "No content",
+  "preview": "Preview",
+  "source": "Source",
+  "more": "More",
+  "decrease": "Decrease",
+  "increase": "Increase",
+  "fontSmaller": "Smaller font",
+  "fontReset": "Reset font",
+  "fontLarger": "Larger font",
+  "zoomIn": "Zoom in",
+  "zoomOut": "Zoom out",
+  "resetZoom": "Reset zoom",
   "add": "Add",
   "reset": "Reset",
   "format": "Format",
   "edit": "Edit",
-  "delete": "Delete"
+  "delete": "Delete",
+  "save": "Save",
+  "clear": "Clear",
+  "saved": "Saved",
+  "unknownError": "Unknown error",
+  "testing": "Testing in progress",
+  "saving": "Saving",
+  "scrollLeft": "Scroll left",
+  "scrollRight": "Scroll right",
+  "history": "History",
+  "minimize": "Minimize",
+  "maximize": "Maximize",
+  "restore": "Restore",
+  "browser": {
+    "back": "Back",
+    "forward": "Forward",
+    "reload": "Reload",
+    "addressLabel": "Address bar",
+    "addressPlaceholder": "Enter a URL",
+    "enterUrlToStart": "Enter a URL to start browsing",
+    "enterUrlDescription": "Type a URL in the address bar above to visit a website",
+    "name": "Yo Browser"
+  },
+  "size": {
+    "bytes": "{count} bytes"
+  },
+  "time": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "lastWeek": "Last week",
+    "older": "Older"
+  },
+  "project": {
+    "select": "Select project",
+    "none": "No project",
+    "recent": "Recent projects",
+    "openFolder": "Open folder..."
+  }
 }

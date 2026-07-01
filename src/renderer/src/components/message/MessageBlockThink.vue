@@ -1,64 +1,67 @@
-<!-- eslint-disable vue/no-v-html -->
 <template>
-  <div
-    class="text-xs text-secondary-foreground bg-muted rounded-lg border border-input flex flex-col gap-2 px-2 py-2"
-  >
-    <div class="flex flex-row gap-2 items-center cursor-pointer" @click="collapse = !collapse">
-      <Button variant="ghost" size="icon" class="w-4 h-4 text-muted-foreground">
-        <Icon icon="lucide:chevrons-up-down" class="w-4 h-4" />
-      </Button>
-      <span class="flex-grow"
-        >{{
-          block.status === 'loading'
-            ? t('chat.features.deepThinkingProgress')
-            : t('chat.features.deepThinking')
-        }}
-        <span>{{
-          reasoningDuration > 0 ? t('chat.features.thinkingDuration', [reasoningDuration]) : ''
-        }}</span>
-      </span>
-    </div>
-    <div v-show="!collapse" ref="messageBlock" class="w-full relative">
-      <div
-        class="prose prose-sm dark:prose-invert w-full max-w-full leading-7 break-all"
-        v-html="renderedContent"
-      ></div>
-    </div>
-
-    <Icon
-      v-if="block.status === 'loading'"
-      icon="lucide:loader-circle"
-      class="w-4 h-4 text-muted-foreground animate-spin"
-    />
-  </div>
+  <ThinkContent
+    :label="headerText"
+    :expanded="!collapse"
+    :thinking="block.status === 'loading'"
+    :content="block.content"
+    @toggle="collapse = !collapse"
+  />
 </template>
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { Icon } from '@iconify/vue'
-import { Button } from '@/components/ui/button'
-import { computed, onMounted, ref, watch } from 'vue'
-import { usePresenter } from '@/composables/usePresenter'
-import { renderMarkdown, getCommonMarkdown } from 'vue-renderer-markdown'
-import { AssistantMessageBlock } from '@shared/chat'
+import { ThinkContent } from '@/components/think-content'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { createConfigClient } from '@api/ConfigClient'
+import type { DisplayAssistantMessageBlock } from '@/components/chat/messageListItems'
+import { useThrottleFn } from '@vueuse/core'
 const props = defineProps<{
-  block: AssistantMessageBlock
+  block: DisplayAssistantMessageBlock
   usage: {
     reasoning_start_time: number
     reasoning_end_time: number
   }
 }>()
+
+const emit = defineEmits<{
+  (e: 'toggle-collapse', isCollapsed: boolean): void
+}>()
 const { t } = useI18n()
 
-const configPresenter = usePresenter('configPresenter')
+const configClient = createConfigClient()
 
-const messageBlock = ref<HTMLDivElement | null>(null)
+// kept for potential future scroll anchoring; currently unused
 
 const collapse = ref(false)
+const displayedSeconds = ref(0)
+const UPDATE_INTERVAL = 1000
+const UPDATE_OFFSET = 80
+let updateTimer: ReturnType<typeof setTimeout> | null = null
+
+type ReasoningTimeRange = {
+  start: number
+  end: number
+}
+
+const toReasoningTimeRange = (
+  value: DisplayAssistantMessageBlock['reasoning_time']
+): ReasoningTimeRange | null => {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  return typeof value.start === 'number' && typeof value.end === 'number'
+    ? { start: value.start, end: value.end }
+    : null
+}
+
+const reasoningTimeRange = computed(() => toReasoningTimeRange(props.block.reasoning_time))
+
 const reasoningDuration = computed(() => {
-  let duration: number
-  if (props.block.reasoning_time) {
-    duration = (props.block.reasoning_time.end - props.block.reasoning_time.start) / 1000
+  let duration = 0
+  const range = reasoningTimeRange.value
+  if (range) {
+    duration = (range.end - range.start) / 1000
   } else {
     duration = (props.usage.reasoning_end_time - props.usage.reasoning_start_time) / 1000
   }
@@ -66,19 +69,103 @@ const reasoningDuration = computed(() => {
   return parseFloat(duration.toFixed(2))
 })
 
-const md = getCommonMarkdown()
-const renderedContent = computed(() => {
-  return renderMarkdown(md, props.block.content || '')
+const updateDisplayedSeconds = () => {
+  const normalized = Number.isFinite(reasoningDuration.value) ? reasoningDuration.value : 0
+  const value = Math.max(0, Math.floor(normalized))
+  displayedSeconds.value = value
+}
+
+const stopTimer = () => {
+  if (updateTimer !== null) {
+    clearTimeout(updateTimer)
+    updateTimer = null
+  }
+}
+
+const scheduleNextUpdate = () => {
+  stopTimer()
+  if (props.block.status !== 'loading') return
+
+  const fallbackDuration = Number.isFinite(reasoningDuration.value)
+    ? reasoningDuration.value * 1000
+    : 0
+  const startTimestamp = reasoningTimeRange.value?.start ?? Date.now() - fallbackDuration
+  const now = Date.now()
+  const elapsed = Math.max(0, now - startTimestamp)
+  const remainder = elapsed % UPDATE_INTERVAL
+  const delay = Math.max(UPDATE_INTERVAL - remainder, 0) + UPDATE_OFFSET
+
+  updateTimer = setTimeout(() => {
+    updateDisplayedSeconds()
+    scheduleNextUpdate()
+  }, delay)
+}
+
+const isModeChange = computed(() => {
+  return props.block.extra?.mode_change !== undefined
+})
+
+const modeChangeId = computed(() => {
+  return props.block.extra?.mode_change as string
+})
+
+const headerText = computed(() => {
+  if (isModeChange.value) {
+    return t('chat.features.modeChanged', { mode: modeChangeId.value })
+  }
+  const seconds = displayedSeconds.value
+  return props.block.status === 'loading'
+    ? t('chat.features.thoughtForSecondsLoading', { seconds })
+    : t('chat.features.thoughtForSeconds', { seconds })
 })
 
 watch(
   () => collapse.value,
+  (newValue) => {
+    void configClient.setSetting('think_collapse', newValue)
+    emit('toggle-collapse', !newValue)
+  }
+)
+
+const statusWatchSource = () =>
+  [props.block.status, reasoningTimeRange.value?.start, reasoningTimeRange.value?.end] as const
+
+const handleStatusChange = useThrottleFn(
   () => {
-    configPresenter.setSetting('think_collapse', collapse.value)
+    updateDisplayedSeconds()
+    if (props.block.status === 'loading') {
+      scheduleNextUpdate()
+    } else {
+      stopTimer()
+    }
+  },
+  500,
+  true,
+  true
+)
+
+watch(
+  statusWatchSource,
+  () => {
+    handleStatusChange()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => reasoningDuration.value,
+  () => {
+    // Always update displayed seconds when reasoning duration changes
+    // This ensures real-time updates during streaming
+    updateDisplayedSeconds()
   }
 )
 
 onMounted(async () => {
-  collapse.value = Boolean(await configPresenter.getSetting('think_collapse'))
+  collapse.value = Boolean(await configClient.getSetting('think_collapse'))
+})
+
+onBeforeUnmount(() => {
+  stopTimer()
 })
 </script>

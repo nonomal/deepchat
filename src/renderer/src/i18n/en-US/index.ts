@@ -1,4 +1,5 @@
 import common from './common.json'
+import image from './image.json'
 import update from './update.json'
 import routes from './routes.json'
 import chat from './chat.json'
@@ -12,17 +13,18 @@ import artifacts from './artifacts.json'
 import sync from './sync.json'
 import toolCall from './toolCall.json'
 import components from './components.json'
-import newThread from './newThread.json'
 import about from './about.json'
 import contextMenu from './contextMenu.json'
 import promptSetting from './promptSetting.json'
+import traceDialog from './traceDialog.json'
+import plan from './plan.json'
 
 // Individual top-level keys
 const others = {
-  Silicon: 'Silicon Flow',
+  Silicon: 'SiliconFlow',
   Qiniu: 'Qiniu',
   QwenLM: 'Qwen Model',
-  Doubao: 'Doubao',
+  Doubao: 'Volcano Engine',
   PPIO: 'PPIO Cloud',
   Moonshot: 'Moonshot AI',
   DashScope: 'Alibaba Bailian',
@@ -33,6 +35,7 @@ const others = {
 
 export default {
   common,
+  image,
   update,
   routes,
   chat,
@@ -46,9 +49,10 @@ export default {
   sync,
   toolCall,
   components,
-  newThread,
   about,
   contextMenu,
   promptSetting,
+  traceDialog,
+  plan,
   ...others
 }

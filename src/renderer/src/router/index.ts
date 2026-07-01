@@ -17,106 +17,77 @@ const router = createRouter({
       }
     },
     {
-      path: '/welcome',
-      name: 'welcome',
-      component: () => import('@/views/WelcomeView.vue'),
+      path: '/plugins',
+      component: () => import('@/pages/plugins/PluginsHubPage.vue'),
       meta: {
-        titleKey: 'routes.welcome',
-        icon: 'lucide:message-square'
-      }
-    },
-    {
-      path: '/settings',
-      name: 'settings',
-      component: () => import('@/views/SettingsTabView.vue'),
-      meta: {
-        titleKey: 'routes.settings',
-        icon: 'lucide:settings'
+        titleKey: 'routes.plugins',
+        icon: 'lucide:puzzle'
       },
-      redirect: { name: 'settings-common' },
       children: [
         {
-          path: 'common',
-          name: 'settings-common',
-          component: () => import('@/components/settings/CommonSettings.vue'),
+          path: '',
+          name: 'plugins',
+          component: () => import('@/pages/plugins/PluginsCatalogPage.vue'),
           meta: {
-            titleKey: 'routes.settings-common',
-            icon: 'lucide:bolt'
+            titleKey: 'routes.plugins',
+            icon: 'lucide:puzzle'
           }
         },
         {
-          path: 'display',
-          name: 'settings-display',
-          component: () => import('@/components/settings/DisplaySettings.vue'),
+          path: 'skills',
+          name: 'plugins-skills',
+          component: () => import('@/pages/plugins/SkillsPluginsPage.vue'),
           meta: {
-            titleKey: 'routes.settings-display',
-            icon: 'lucide:monitor'
-          }
-        },
-        {
-          path: 'provider/:providerId?',
-          name: 'settings-provider',
-          component: () => import('@/components/settings/ModelProviderSettings.vue'),
-          meta: {
-            titleKey: 'routes.settings-provider',
-            icon: 'lucide:cloud-cog'
+            titleKey: 'routes.settings-skills',
+            icon: 'lucide:wand-sparkles'
           }
         },
         {
           path: 'mcp',
-          name: 'settings-mcp',
-          component: () => import('@/components/settings/McpSettings.vue'),
+          name: 'plugins-mcp',
+          component: () => import('@/pages/plugins/McpPluginsPage.vue'),
           meta: {
             titleKey: 'routes.settings-mcp',
             icon: 'lucide:server'
           }
         },
         {
-          path: 'prompt',
-          name: 'settings-prompt',
-          component: () => import('@/components/settings/PromptSetting.vue'),
-          meta: {
-            titleKey: 'routes.settings-prompt',
-            icon: 'lucide:book-open-text'
-          }
+          path: 'remote',
+          redirect: { name: 'plugins' }
         },
         {
-          path: 'knowledge-base',
-          name: 'settings-knowledge-base',
-          component: () => import('@/components/settings/KnowledgeBaseSettings.vue'),
-          meta: {
-            titleKey: 'routes.settings-knowledge-base',
-            icon: 'lucide:book-marked'
-          }
+          path: 'remote/:channel',
+          redirect: (to) => ({
+            name: 'plugins-detail',
+            params: { pluginId: `remote:${String(to.params.channel)}` }
+          })
         },
         {
-          path: 'database',
-          name: 'settings-database',
-          component: () => import('@/components/settings/DataSettings.vue'),
-          meta: {
-            titleKey: 'routes.settings-database',
-            icon: 'lucide:database'
-          }
+          path: 'official/:pluginId',
+          redirect: (to) => ({
+            name: 'plugins-detail',
+            params: { pluginId: String(to.params.pluginId) }
+          })
         },
         {
-          path: 'shortcut',
-          name: 'settings-shortcut',
-          component: () => import('@/components/settings/ShortcutSettings.vue'),
+          path: ':pluginId',
+          name: 'plugins-detail',
+          component: () => import('@/pages/plugins/OfficialPluginDetailPage.vue'),
           meta: {
-            titleKey: 'routes.settings-shortcut',
-            icon: 'lucide:keyboard'
-          }
-        },
-        {
-          path: 'about',
-          name: 'settings-about',
-          component: () => import('@/components/settings/AboutUsSettings.vue'),
-          meta: {
-            titleKey: 'routes.settings-about',
-            icon: 'lucide:info'
+            titleKey: 'routes.plugins',
+            icon: 'lucide:puzzle'
           }
         }
       ]
+    },
+    {
+      path: '/welcome',
+      name: 'welcome',
+      component: () => import('@/pages/WelcomePage.vue'),
+      meta: {
+        titleKey: 'routes.welcome',
+        icon: 'lucide:message-square'
+      }
     }
   ]
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Button } from '@/components/ui/button'
+import { Button } from '@shadcn/components/ui/button'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 
@@ -190,7 +190,7 @@ const copyToClipboard = async () => {
 
 <style scoped>
 .json-viewer {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--dc-code-font-family);
   line-height: 1.6;
   font-size: 13px;
   white-space: pre;
@@ -198,7 +198,7 @@ const copyToClipboard = async () => {
 }
 
 .text-content {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--dc-code-font-family);
   line-height: 1.6;
   color: var(--foreground);
   background: transparent;

@@ -30,11 +30,24 @@
   "htmlPreviewTitle": "پیش‌نمایش اچ‌تی‌ام‌ال",
   "svgPreviewTitle": "پیش‌نمایش اس‌وی‌جی",
   "copy": "رونوشت",
-  "copySuccess": "رونوشت موفق",
+  "copySuccess": "رونوشت شد",
   "copySuccessDesc": "محتوا به بریده‌دان رونویسی شد",
-  "copyFailed": "رونوشت ناموفق",
+  "copyFailed": "رونوشت نشد",
   "copyFailedDesc": "رونویسی محتوا به بریده‌دان انجام نشد",
   "copyAsImage": "رونوشت به‌صورت تصویر",
   "copyImageSuccessDesc": "تصویر به بریده‌دان رونویسی شد",
-  "copyImageFailedDesc": "رونویسی تصویر به بریده‌‌‌‌دان انجام نشد"
+  "copyImageFailedDesc": "رونویسی تصویر به بریده‌‌‌‌دان انجام نشد",
+  "desktop": "رایانه رومیزی",
+  "tablet": "تبلت",
+  "mobile": "موبایل",
+  "responsive": "Responsive",
+  "width": "عرض",
+  "height": "ارتفاع",
+  "copyImageFailedDesc": "رونویسی تصویر به بریده‌دان انجام نشد",
+  "noSvgContent": "بدون محتوای SVG در دسترس نیست",
+  "sanitizingSvg": "تصفیه محتوای SVG ...",
+  "svgSanitizationFailed": "محتوای SVG تأیید امنیتی را شکست داد",
+  "mermaid": {
+    "renderError": "رندر ناموفق بود: {message}"
+  }
 }

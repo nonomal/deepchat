@@ -30,11 +30,23 @@
   "htmlPreviewTitle": "HTML Preview",
   "svgPreviewTitle": "SVG Preview",
   "copy": "Copy",
-  "copySuccess": "Copy Success",
+  "copySuccess": "Copied",
   "copySuccessDesc": "Content copied to clipboard",
   "copyFailed": "Copy Failed",
   "copyFailedDesc": "Failed to copy content to clipboard",
-  "copyAsImage": "Copy as an image",
+  "copyAsImage": "Copy as Image",
   "copyImageSuccessDesc": "Image copied to clipboard",
-  "copyImageFailedDesc": "Unable to copy pictures to clipboard"
+  "copyImageFailedDesc": "Could not copy image to clipboard.",
+  "desktop": "Desktop",
+  "tablet": "Tablet",
+  "mobile": "Mobile",
+  "responsive": "Responsive",
+  "width": "Width",
+  "height": "Height",
+  "sanitizingSvg": "Sanitizing SVG content...",
+  "svgSanitizationFailed": "SVG content failed security validation",
+  "noSvgContent": "No SVG content available",
+  "mermaid": {
+    "renderError": "Render failed: {message}"
+  }
 }

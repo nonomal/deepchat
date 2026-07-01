@@ -1,4 +1,5 @@
 import common from './common.json'
+import image from './image.json'
 import update from './update.json'
 import welcome from './welcome.json'
 import routes from './routes.json'
@@ -7,7 +8,6 @@ import sync from './sync.json'
 import thread from './thread.json'
 import mcp from './mcp.json'
 import model from './model.json'
-import newThread from './newThread.json'
 import components from './components.json'
 import dialog from './dialog.json'
 import about from './about.json'
@@ -16,12 +16,13 @@ import chat from './chat.json'
 import toolCall from './toolCall.json'
 import contextMenu from './contextMenu.json'
 import promptSetting from './promptSetting.json'
+import plan from './plan.json'
 // 单独的顶层键
 const others = {
   Silicon: '矽基流動',
   Qiniu: '七牛雲',
   QwenLM: '千問模型',
-  Doubao: '豆包',
+  Doubao: '火山引擎',
   PPIO: '派歐雲',
   Moonshot: '月之暗面',
   Hunyuan: '混元',
@@ -32,6 +33,7 @@ const others = {
 }
 export default {
   common,
+  image,
   update,
   routes,
   chat,
@@ -40,7 +42,6 @@ export default {
   dialog,
   settings,
   welcome,
-  newThread,
   about,
   artifacts,
   sync,
@@ -49,5 +50,6 @@ export default {
   toolCall,
   contextMenu,
   promptSetting,
+  plan,
   ...others
 }

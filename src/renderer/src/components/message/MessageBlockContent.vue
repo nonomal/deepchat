@@ -1,112 +1,135 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <template>
-  <div ref="messageBlock" class="markdown-content-wrapper relative w-full">
-    <template v-for="(part, index) in processedContent" :key="index">
-      <!-- 使用结构化渲染器替代 v-html -->
-      <MarkdownRenderer
-        v-if="part.type === 'text'"
-        :content="part.content"
-        :loading="part.loading"
-        @copy="handleCopyClick"
-      />
+  <template v-for="(part, index) in processedContent" :key="index">
+    <!-- 使用结构化渲染器替代 v-html -->
+    <MarkdownRenderer
+      v-if="part.type === 'text'"
+      :content="part.content"
+      :loading="part.loading"
+      :smooth-streaming="shouldSmoothStream"
+      :message-id="messageId"
+      :thread-id="threadId"
+      :link-context="{
+        source: 'chat',
+        sessionId: threadId
+      }"
+    />
 
-      <ArtifactThinking v-if="part.type === 'thinking' && part.loading" />
-      <div v-if="part.type === 'artifact' && part.artifact" class="my-1">
-        <ArtifactPreview
-          :block="{
-            content: part.content,
-            artifact: part.artifact
-          }"
-          :message-id="messageId"
-          :thread-id="threadId"
-          :loading="part.loading"
-        />
-      </div>
-      <div v-if="part.type === 'tool_call' && part.tool_call" class="my-1">
-        <ToolCallPreview :block="part" :block-status="props.block.status" />
-      </div>
-    </template>
-  </div>
+    <ArtifactThinking v-else-if="part.type === 'thinking' && part.loading" />
+    <div v-else-if="part.type === 'artifact' && part.artifact" class="my-1">
+      <ArtifactPreview
+        :block="{
+          content: part.content,
+          artifact: part.artifact
+        }"
+        :message-id="messageId"
+        :thread-id="threadId"
+        :loading="part.loading"
+      />
+    </div>
+    <div v-else-if="part.type === 'tool_call' && part.tool_call" class="my-1">
+      <ToolCallPreview :block="part" :block-status="props.block.status" />
+    </div>
+  </template>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted } from 'vue'
-
-import { usePresenter } from '@/composables/usePresenter'
-import { SearchResult } from '@shared/presenter'
-
-const threadPresenter = usePresenter('threadPresenter')
-const searchResults = ref<SearchResult[]>([])
+import { computed, ref } from 'vue'
+import { nextTick, watch } from 'vue'
 
 import ArtifactThinking from '../artifacts/ArtifactThinking.vue'
 import ArtifactPreview from '../artifacts/ArtifactPreview.vue'
 import ToolCallPreview from '../artifacts/ToolCallPreview.vue'
-import { useBlockContent } from '@/composables/useArtifacts'
+import { useBlockContent, type ProcessedPart } from '@/composables/useArtifacts'
 import { useArtifactStore } from '@/stores/artifact'
 import MarkdownRenderer from '@/components/markdown/MarkdownRenderer.vue'
-import { AssistantMessageBlock } from '@shared/chat'
+import type { DisplayAssistantMessageBlock } from '@/components/chat/messageListItems'
+
 const artifactStore = useArtifactStore()
 const props = defineProps<{
-  block: AssistantMessageBlock
+  block: DisplayAssistantMessageBlock
   messageId: string
   threadId: string
   isSearchResult?: boolean
 }>()
 
-const messageBlock = ref<HTMLDivElement>()
-
 const { processedContent } = useBlockContent(props)
+const lastArtifactSnapshot = ref<string>('')
+const shouldSmoothStream = computed(
+  () => props.block.status === 'pending' || props.block.status === 'loading'
+)
 
-// Handle copy functionality
-const handleCopyClick = () => {
-  // 现在复制功能在组件内部处理
-}
+const artifactSnapshot = computed(() =>
+  processedContent.value
+    .filter(
+      (
+        part
+      ): part is ProcessedPart & {
+        type: 'artifact'
+        artifact: NonNullable<ProcessedPart['artifact']>
+      } => part.type === 'artifact' && Boolean(part.artifact)
+    )
+    .map((part) => {
+      const artifact = part.artifact
+      return [
+        artifact.identifier,
+        artifact.title,
+        artifact.type,
+        artifact.language || '',
+        part.loading ? '1' : '0',
+        part.content
+      ].join('::')
+    })
+    .join('\n__artifact__\n')
+)
 
-// 修改 watch 函数
 watch(
-  processedContent,
-  () => {
+  artifactSnapshot,
+  (nextSnapshot) => {
+    if (nextSnapshot === lastArtifactSnapshot.value) {
+      return
+    }
+
+    lastArtifactSnapshot.value = nextSnapshot
     nextTick(() => {
       for (const part of processedContent.value) {
-        if (part.type === 'artifact' && part.artifact) {
-          if (props.block.status === 'loading') {
-            if (artifactStore.currentArtifact?.id === part.artifact.identifier) {
-              artifactStore.currentArtifact.content = part.content
-              artifactStore.currentArtifact.title = part.artifact.title
-              artifactStore.currentArtifact.type = part.artifact.type
-              artifactStore.currentArtifact.status = part.loading ? 'loading' : 'loaded'
-            } else {
-              artifactStore.showArtifact(
-                {
-                  id: part.artifact.identifier,
-                  type: part.artifact.type,
-                  title: part.artifact.title,
-                  language: part.artifact.language,
-                  content: part.content,
-                  status: part.loading ? 'loading' : 'loaded'
-                },
-                props.messageId,
-                props.threadId
-              )
-            }
+        const artifact = part.type === 'artifact' && part.artifact
+        if (!artifact) continue
+        const { title, type } = artifact
+        const { content, loading } = part
+        if (props.block.status === 'loading') {
+          const status = loading ? 'loading' : 'loaded'
+          const nextArtifact = {
+            id: artifact.identifier,
+            type,
+            title,
+            language: artifact.language,
+            content,
+            status
+          } as const
+
+          if (loading) {
+            artifactStore.syncArtifact(nextArtifact, props.messageId, props.threadId)
           } else {
-            if (artifactStore.currentArtifact?.id === part.artifact.identifier) {
-              artifactStore.currentArtifact.content = part.content
-              artifactStore.currentArtifact.title = part.artifact.title
-              artifactStore.currentArtifact.type = part.artifact.type
-              artifactStore.currentArtifact.status = 'loaded'
-            }
+            artifactStore.completeArtifact(nextArtifact, props.messageId, props.threadId)
           }
+        } else {
+          artifactStore.completeArtifact(
+            {
+              id: artifact.identifier,
+              type,
+              title: artifact.title,
+              language: artifact.language,
+              content,
+              status: 'loaded'
+            },
+            props.messageId,
+            props.threadId
+          )
         }
       }
     })
   },
   { immediate: true }
 )
-
-onMounted(async () => {
-  if (props.isSearchResult) {
-    searchResults.value = await threadPresenter.getSearchResults(props.messageId)
-  }
-})
 </script>

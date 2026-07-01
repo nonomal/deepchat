@@ -1,20 +1,18 @@
 import { resolve } from 'path'
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
-import autoprefixer from 'autoprefixer'
-import tailwind from 'tailwindcss'
 import vueDevTools from 'vite-plugin-vue-devtools'
 import svgLoader from 'vite-svg-loader'
 import monacoEditorPlugin from 'vite-plugin-monaco-editor-esm'
 import path from 'node:path'
+import tailwindcss from '@tailwindcss/vite'
+
+const isCustomElement = (tag: string) =>
+  tag === 'voice-agent-widget' || tag.startsWith('ui-resource-renderer')
+const isVueDevToolsOverlayEnabled = process.env.DEEPCHAT_VUE_DEVTOOLS_OVERLAY !== '0'
 
 export default defineConfig({
   main: {
-    plugins: [
-      externalizeDepsPlugin({
-        exclude: ['mermaid', 'dompurify', 'pyodide']
-      })
-    ],
     resolve: {
       alias: {
         '@': resolve('src/main/'),
@@ -22,22 +20,47 @@ export default defineConfig({
       }
     },
     build: {
+      externalizeDeps: {
+        exclude: ['mermaid']
+      },
       rollupOptions: {
-        external: ['sharp', 'pyodide']
+        input: {
+          index: resolve('src/main/index.ts'),
+          backgroundExecUtilityHost: resolve('src/main/backgroundExecUtilityHostEntry.ts'),
+          fileWatcherUtilityHost: resolve('src/main/fileWatcherUtilityHostEntry.ts')
+        },
+        external: ['sharp', '@duckdb/node-api'],
+        output: {
+          entryFileNames: '[name].js',
+          chunkFileNames: 'chunks/[name]-[hash].js',
+          manualChunks: undefined
+        }
       }
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
     resolve: {
       alias: {
         '@shared': resolve('src/shared')
+      }
+    },
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('src/preload/index.ts'),
+          splash: resolve('src/preload/splash-preload.ts'),
+          floating: resolve('src/preload/floating-preload.ts'),
+          browserOverlay: resolve('src/preload/browser-overlay-preload.ts'),
+          pluginSettings: resolve('src/preload/plugin-settings-preload.ts')
+        }
       }
     }
   },
   renderer: {
     optimizeDeps: {
+      exclude: ['markstream-vue', 'stream-monaco'],
       include: [
+        '@antv/infographic',
         'monaco-editor',
         'axios'
       ]
@@ -45,39 +68,78 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': resolve('src/renderer/src'),
-        '@shell': resolve('src/renderer/shell'),
+        '@api': resolve('src/renderer/api'),
         '@shared': resolve('src/shared'),
+        "@shadcn": resolve('src/shadcn'),
         vue: 'vue/dist/vue.esm-bundler.js'
-      }
-    },
-    css: {
-      postcss: {
-        plugins: [tailwind(), autoprefixer()]
       }
     },
     server: {
       host: '0.0.0.0' // 防止代理干扰，导致vite-electron之间ws://localhost:5713和http://localhost:5713通信失败、页面组件无法加载
     },
     plugins: [
+      tailwindcss(),
       monacoEditorPlugin({
-        languageWorkers: ['editorWorkerService', 'typescript', 'css', 'html', 'json'],
+        languageWorkers: [],
+        customWorkers: [
+          {
+            label: 'editorWorkerService',
+            entry: 'monaco-editor/esm/vs/editor/editor.worker.js',
+          },
+          {
+            label: 'typescript',
+            entry: 'monaco-editor/esm/vs/language/typescript/ts.worker.js',
+          },
+          {
+            label: 'css',
+            entry: 'monaco-editor/esm/vs/language/css/css.worker.js',
+          },
+          {
+            label: 'html',
+            entry: 'monaco-editor/esm/vs/language/html/html.worker.js',
+          },
+          {
+            label: 'json',
+            entry: 'monaco-editor/esm/vs/language/json/json.worker.js',
+          },
+        ],
         customDistPath(_root, buildOutDir, _base) {
           return path.resolve(buildOutDir, 'monacoeditorwork')
         },
       }),
-      vue(),
+      vue({
+        template: {
+          compilerOptions: {
+            isCustomElement
+          }
+        }
+      }),
       svgLoader(),
-      vueDevTools({
-        // use export LAUNCH_EDITOR=cursor instead
-        // launchEditor: 'cursor'
-      })
+      ...(isVueDevToolsOverlayEnabled
+        ? [
+            vueDevTools({
+              appendTo: 'src/renderer/src/main.ts'
+              // appendTo:'src/renderer/browser/main.ts'
+            })
+          ]
+        : [])
     ],
+    worker: {
+      format: 'es'
+    },
     build: {
       minify: 'esbuild',
+      // Ensure CSS order in build matches import order in dev
+      // This prevents extracted CSS from async chunks from reordering
+      // and breaking cascade precedence (e.g. markdown renderer vs app styles)
+      cssCodeSplit: false,
       rollupOptions: {
         input: {
-          shell: resolve('src/renderer/shell/index.html'),
-          index: resolve('src/renderer/index.html')
+          index: resolve('src/renderer/index.html'),
+          browserOverlay: resolve('src/renderer/browser-overlay/index.html'),
+          floating: resolve('src/renderer/floating/index.html'),
+          splash: resolve('src/renderer/splash/index.html'),
+          settings: resolve('src/renderer/settings/index.html')
         }
       }
     }

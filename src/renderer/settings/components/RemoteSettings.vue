@@ -1,0 +1,3737 @@
+<template>
+  <component :is="rootComponent" data-testid="settings-remote-page" class="h-full w-full">
+    <div class="flex h-full w-full flex-col gap-4 p-4">
+      <div v-if="isLoading" class="space-y-4 animate-pulse">
+        <div class="h-6 w-48 rounded bg-muted/50"></div>
+        <div class="h-20 rounded-xl bg-muted/40"></div>
+        <div class="h-12 rounded-xl bg-muted/30"></div>
+        <div class="h-80 rounded-xl bg-muted/20"></div>
+      </div>
+      <div
+        v-else-if="
+          !telegramSettings ||
+          !telegramStatus ||
+          !feishuSettings ||
+          !feishuStatus ||
+          !qqbotSettings ||
+          !qqbotStatus ||
+          !discordSettings ||
+          !discordStatus ||
+          !weixinIlinkSettings ||
+          !weixinIlinkStatus
+        "
+        class="text-sm text-muted-foreground"
+      >
+        {{ t('common.error.requestFailed') }}
+      </div>
+      <template v-else>
+        <div v-if="!props.hideHeader" class="space-y-1">
+          <div class="flex items-center gap-2">
+            <div class="text-base font-medium">
+              {{ singleChannelMode ? channelTitle(activeChannel) : t('settings.remote.title') }}
+            </div>
+            <span v-if="isAnySaving" class="text-xs text-muted-foreground">
+              {{ t('common.saving') }}
+            </span>
+          </div>
+          <div class="text-sm text-muted-foreground">
+            {{
+              singleChannelMode
+                ? channelDescription(activeChannel)
+                : t('settings.remote.description')
+            }}
+          </div>
+        </div>
+
+        <Tabs v-model="activeChannel" class="space-y-4">
+          <TabsList
+            v-if="!singleChannelMode"
+            class="grid w-full"
+            :style="{ gridTemplateColumns: `repeat(${implementedChannelCount}, minmax(0, 1fr))` }"
+          >
+            <TabsTrigger
+              v-for="channel in implementedChannels"
+              :key="`remote-tab-${channel}`"
+              :value="channel"
+              :data-testid="`remote-tab-${channel}`"
+              class="flex items-center gap-2"
+            >
+              <span
+                :class="[
+                  'h-2 w-2 rounded-full',
+                  statusDotClass(channelStatus(channel)?.state || 'stopped', true)
+                ]"
+              ></span>
+              {{ channelTitle(channel) }}
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="telegram" class="space-y-4">
+            <div class="rounded-lg border bg-muted/20 p-4">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="text-base font-medium">{{ channelTitle('telegram') }}</div>
+                    <span
+                      :class="[
+                        'inline-flex rounded-full px-2 py-1 text-[11px]',
+                        statusDotClass(telegramStatus.state)
+                      ]"
+                    >
+                      {{ formatStatusLine(telegramStatus) }}
+                    </span>
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.telegram.description') }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ formatOverviewLine('telegram') }}
+                  </p>
+                  <p v-if="telegramStatus.lastError" class="break-all text-xs text-destructive">
+                    {{ telegramStatus.lastError }}
+                  </p>
+                </div>
+                <label
+                  v-if="!props.hideChannelToggle"
+                  class="flex items-center gap-2 text-sm text-muted-foreground"
+                >
+                  <span>{{
+                    telegramSettings.remoteEnabled ? t('common.enabled') : t('common.disabled')
+                  }}</span>
+                  <Switch
+                    data-testid="remote-channel-toggle-telegram"
+                    :model-value="telegramSettings.remoteEnabled"
+                    :disabled="saving.telegram"
+                    @update:model-value="(value) => updateTelegramRemoteEnabled(value === true)"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.credentials') }}
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.telegram.botTokenDescription') }}
+                  </p>
+                </div>
+
+                <div class="space-y-2">
+                  <Label class="text-xs text-muted-foreground">
+                    {{ t('settings.remote.telegram.botToken') }}
+                  </Label>
+                  <div class="relative w-full">
+                    <Input
+                      v-model="telegramSettings.botToken"
+                      :type="showBotToken ? 'text' : 'password'"
+                      :placeholder="t('settings.remote.telegram.botTokenPlaceholder')"
+                      class="pr-10"
+                      @blur="queueTelegramSettingsPersist"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="absolute right-2 top-1/2 h-7 w-7 -translate-y-1/2 p-0"
+                      @click="showBotToken = !showBotToken"
+                    >
+                      <Icon
+                        :icon="showBotToken ? 'lucide:eye-off' : 'lucide:eye'"
+                        class="h-4 w-4 text-muted-foreground"
+                      />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.remoteControl') }}
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.remoteControl.description') }}
+                  </p>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultAgent') }}
+                    </Label>
+                    <Select
+                      :model-value="telegramSettings.defaultAgentId"
+                      @update:model-value="(value) => updateTelegramDefaultAgentId(String(value))"
+                    >
+                      <SelectTrigger data-testid="remote-default-agent-select" class="h-8!">
+                        <SelectValue
+                          :placeholder="t('settings.remote.remoteControl.defaultAgentPlaceholder')"
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="agent in defaultAgentOptions(telegramSettings.defaultAgentId)"
+                          :key="agent.id"
+                          :value="agent.id"
+                        >
+                          {{ agent.name }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdir') }}
+                    </Label>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          class="h-8 w-full min-w-0 justify-between gap-1.5 px-2.5 text-xs"
+                          :title="defaultWorkdirTitle('telegram')"
+                        >
+                          <div class="flex min-w-0 items-center gap-1.5">
+                            <Icon
+                              icon="lucide:folder"
+                              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span class="truncate">{{ defaultWorkdirLabel('telegram') }}</span>
+                          </div>
+                          <Icon
+                            icon="lucide:chevron-down"
+                            class="h-3 w-3 shrink-0 text-muted-foreground"
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" class="w-[20rem]">
+                        <DropdownMenuItem
+                          v-for="project in directoryOptions('telegram')"
+                          :key="project.path"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="selectDefaultWorkdir('telegram', project.path)"
+                        >
+                          <Icon
+                            icon="lucide:folder"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <div class="truncate">{{ project.name }}</div>
+                            <div class="truncate text-[10px] text-muted-foreground">
+                              {{ project.path }}
+                            </div>
+                          </div>
+                          <Icon
+                            v-if="normalizePath(telegramSettings.defaultWorkdir) === project.path"
+                            icon="lucide:check"
+                            class="h-3.5 w-3.5 shrink-0"
+                          />
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="pickDefaultWorkdir('telegram')"
+                        >
+                          <Icon
+                            icon="lucide:folder-open"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.project.openFolder') }}</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-if="telegramSettings.defaultWorkdir"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="clearDefaultWorkdir('telegram')"
+                        >
+                          <Icon
+                            icon="lucide:x"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.clear') }}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdirHelper') }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    data-testid="remote-pair-button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="!telegramSettings.remoteEnabled || saving.telegram"
+                    @click="generatePairCodeAndOpenDialog('telegram')"
+                  >
+                    {{ t('settings.remote.remoteControl.openPairDialog') }}
+                  </Button>
+                  <Button
+                    data-testid="remote-bindings-button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="saving.telegram"
+                    @click="openBindingsDialog('telegram')"
+                  >
+                    {{ t('settings.remote.remoteControl.manageBindings') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="feishu" class="space-y-4">
+            <div class="rounded-lg border bg-muted/20 p-4">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="text-base font-medium">{{ channelTitle('feishu') }}</div>
+                    <span
+                      :class="[
+                        'inline-flex rounded-full px-2 py-1 text-[11px]',
+                        statusDotClass(feishuStatus.state)
+                      ]"
+                    >
+                      {{ formatStatusLine(feishuStatus) }}
+                    </span>
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.feishu.description') }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ formatOverviewLine('feishu') }}
+                  </p>
+                  <p v-if="feishuStatus.lastError" class="break-all text-xs text-destructive">
+                    {{ feishuStatus.lastError }}
+                  </p>
+                </div>
+                <label
+                  v-if="!props.hideChannelToggle"
+                  class="flex items-center gap-2 text-sm text-muted-foreground"
+                >
+                  <span>{{
+                    feishuSettings.remoteEnabled ? t('common.enabled') : t('common.disabled')
+                  }}</span>
+                  <Switch
+                    data-testid="remote-channel-toggle-feishu"
+                    :model-value="feishuSettings.remoteEnabled"
+                    :disabled="saving.feishu"
+                    @update:model-value="(value) => updateFeishuRemoteEnabled(value === true)"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.credentials') }}
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.feishu.brand') }}
+                    </Label>
+                    <Select
+                      :model-value="feishuSettings.brand"
+                      @update:model-value="
+                        (value) => {
+                          if (!feishuSettings) {
+                            return
+                          }
+                          feishuSettings.brand = String(value) === 'lark' ? 'lark' : 'feishu'
+                          queueFeishuSettingsPersist()
+                        }
+                      "
+                    >
+                      <SelectTrigger class="h-8!">
+                        <SelectValue :placeholder="t('settings.remote.feishu.brand')" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="feishu">
+                          {{ t('settings.remote.feishu.brandFeishu') }}
+                        </SelectItem>
+                        <SelectItem value="lark">
+                          {{ t('settings.remote.feishu.brandLark') }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.feishu.appId') }}
+                    </Label>
+                    <Input
+                      v-model="feishuSettings.appId"
+                      :placeholder="t('settings.remote.feishu.appIdPlaceholder')"
+                      @blur="queueFeishuSettingsPersist"
+                    />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.feishu.appSecret') }}
+                    </Label>
+                    <Input
+                      v-model="feishuSettings.appSecret"
+                      type="password"
+                      :placeholder="t('settings.remote.feishu.appSecretPlaceholder')"
+                      @blur="queueFeishuSettingsPersist"
+                    />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.feishu.verificationToken') }}
+                    </Label>
+                    <Input
+                      v-model="feishuSettings.verificationToken"
+                      :placeholder="t('settings.remote.feishu.verificationTokenPlaceholder')"
+                      @blur="queueFeishuSettingsPersist"
+                    />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.feishu.encryptKey') }}
+                    </Label>
+                    <Input
+                      v-model="feishuSettings.encryptKey"
+                      :placeholder="t('settings.remote.feishu.encryptKeyPlaceholder')"
+                      @blur="queueFeishuSettingsPersist"
+                    />
+                  </div>
+                </div>
+
+                <div class="rounded-lg border bg-muted/20 p-3 text-sm">
+                  <div class="font-medium">{{ t('settings.remote.feishu.installTitle') }}</div>
+                  <p class="mt-1 text-muted-foreground">
+                    {{ t('settings.remote.feishu.installDescription') }}
+                  </p>
+                  <div v-if="feishuInstallUserCode" class="mt-2 text-xs text-muted-foreground">
+                    {{
+                      t('settings.remote.feishu.installUserCode', { code: feishuInstallUserCode })
+                    }}
+                  </div>
+                  <div v-if="feishuInstallMessage" class="mt-2 text-xs text-muted-foreground">
+                    {{ feishuInstallMessage }}
+                  </div>
+                  <div v-if="feishuInstallError" class="mt-2 break-all text-xs text-destructive">
+                    {{ feishuInstallError }}
+                  </div>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      data-testid="feishu-install-open-web-button"
+                      variant="default"
+                      size="sm"
+                      :disabled="feishuInstallBusy || saving.feishu"
+                      @click="startFeishuInstall('web')"
+                    >
+                      <Icon
+                        :icon="
+                          feishuInstallBusy && feishuInstallMode === 'web'
+                            ? 'lucide:loader-2'
+                            : 'lucide:external-link'
+                        "
+                        :class="[
+                          'h-4 w-4',
+                          { 'animate-spin': feishuInstallBusy && feishuInstallMode === 'web' }
+                        ]"
+                      />
+                      {{
+                        feishuInstallBusy && feishuInstallMode === 'web'
+                          ? t('settings.remote.feishu.installWaiting')
+                          : t('settings.remote.feishu.openInstallWeb')
+                      }}
+                    </Button>
+                    <Button
+                      data-testid="feishu-install-show-qr-button"
+                      variant="outline"
+                      size="sm"
+                      :disabled="feishuInstallBusy || saving.feishu"
+                      @click="startFeishuInstall('qr')"
+                    >
+                      <Icon
+                        :icon="
+                          feishuInstallBusy && feishuInstallMode === 'qr'
+                            ? 'lucide:loader-2'
+                            : 'lucide:qr-code'
+                        "
+                        :class="[
+                          'h-4 w-4',
+                          { 'animate-spin': feishuInstallBusy && feishuInstallMode === 'qr' }
+                        ]"
+                      />
+                      {{
+                        feishuInstallBusy && feishuInstallMode === 'qr'
+                          ? t('settings.remote.feishu.installWaiting')
+                          : t('settings.remote.feishu.showInstallQr')
+                      }}
+                    </Button>
+                    <Button
+                      v-if="feishuInstallBusy"
+                      variant="outline"
+                      size="sm"
+                      @click="cancelFeishuInstall()"
+                    >
+                      {{ t('common.cancel') }}
+                    </Button>
+                  </div>
+                </div>
+
+                <div class="rounded-lg border border-dashed bg-muted/20 p-3 text-sm">
+                  <div class="font-medium">{{ t('settings.remote.feishu.manualSetupTitle') }}</div>
+                  <p class="mt-1 text-muted-foreground">
+                    {{ t('settings.remote.feishu.manualSetupDescription') }}
+                  </p>
+                  <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                    <li>{{ t('settings.remote.feishu.setupStepCreateApp') }}</li>
+                    <li>{{ t('settings.remote.feishu.setupStepPermissions') }}</li>
+                    <li>{{ t('settings.remote.feishu.setupStepEvents') }}</li>
+                    <li>{{ t('settings.remote.feishu.setupStepPublish') }}</li>
+                  </ul>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" @click="openFeishuSetupGuide">
+                      {{ t('settings.remote.feishu.openSetupGuide') }}
+                    </Button>
+                    <Button variant="outline" size="sm" @click="openFeishuDeveloperConsole">
+                      {{ t('settings.remote.feishu.openDeveloperConsole') }}
+                    </Button>
+                    <Button variant="outline" size="sm" @click="openFeishuBotChat">
+                      {{ t('settings.remote.feishu.openBotChat') }}
+                    </Button>
+                  </div>
+                </div>
+
+                <div class="rounded-lg border bg-muted/20 p-3 text-sm">
+                  <div class="font-medium">{{ t('settings.remote.feishu.userAuthTitle') }}</div>
+                  <p class="mt-1 text-muted-foreground">
+                    {{ t('settings.remote.feishu.userAuthDescription') }}
+                  </p>
+                  <div class="mt-3 grid gap-3 md:grid-cols-2">
+                    <div class="rounded-md border border-dashed bg-background/60 p-3">
+                      <div class="text-xs font-medium text-foreground">
+                        {{ t('settings.remote.feishu.pairAuthTitle') }}
+                      </div>
+                      <p class="mt-1 text-xs text-muted-foreground">
+                        {{ t('settings.remote.feishu.pairAuthDescription') }}
+                      </p>
+                    </div>
+                    <div class="rounded-md border border-dashed bg-background/60 p-3">
+                      <div class="text-xs font-medium text-foreground">
+                        {{ t('settings.remote.feishu.scanAuthTitle') }}
+                      </div>
+                      <p class="mt-1 text-xs text-muted-foreground">
+                        {{ t('settings.remote.feishu.scanAuthDescription') }}
+                      </p>
+                    </div>
+                  </div>
+                  <div v-if="feishuAuthMessage" class="mt-2 text-xs text-muted-foreground">
+                    {{ feishuAuthMessage }}
+                  </div>
+                  <div v-if="feishuAuthError" class="mt-2 break-all text-xs text-destructive">
+                    {{ feishuAuthError }}
+                  </div>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      data-testid="feishu-pair-button"
+                      variant="outline"
+                      size="sm"
+                      :disabled="!feishuSettings.remoteEnabled || saving.feishu"
+                      @click="generatePairCodeAndOpenDialog('feishu')"
+                    >
+                      <Icon icon="lucide:key-round" class="h-4 w-4" />
+                      {{ t('settings.remote.remoteControl.openPairDialog') }}
+                    </Button>
+                    <Button
+                      data-testid="feishu-scan-auth-button"
+                      variant="outline"
+                      size="sm"
+                      :disabled="feishuAuthBusy || saving.feishu"
+                      @click="startFeishuScanAuth"
+                    >
+                      <Icon
+                        :icon="feishuAuthBusy ? 'lucide:loader-2' : 'lucide:scan-line'"
+                        :class="['h-4 w-4', { 'animate-spin': feishuAuthBusy }]"
+                      />
+                      {{
+                        feishuAuthBusy
+                          ? t('settings.remote.feishu.scanAuthWaiting')
+                          : t('settings.remote.feishu.startScanAuth')
+                      }}
+                    </Button>
+                    <Button
+                      v-if="feishuAuthBusy"
+                      variant="outline"
+                      size="sm"
+                      @click="cancelFeishuScanAuth()"
+                    >
+                      {{ t('common.cancel') }}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.remoteControl') }}
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.remoteControl.description') }}
+                  </p>
+                </div>
+
+                <div
+                  class="rounded-lg border border-dashed bg-muted/20 p-3 text-sm text-muted-foreground"
+                >
+                  <div>{{ t('settings.remote.feishu.accessRule1') }}</div>
+                  <div class="mt-1">{{ t('settings.remote.feishu.accessRule2') }}</div>
+                </div>
+
+                <label
+                  class="flex items-start justify-between gap-4 rounded-lg border bg-muted/20 p-3 text-sm"
+                >
+                  <div class="space-y-1">
+                    <div class="font-medium">{{ t('settings.remote.feishu.streamingCards') }}</div>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.feishu.streamingCardsDescription') }}
+                    </p>
+                  </div>
+                  <Switch
+                    data-testid="feishu-streaming-cards-toggle"
+                    :model-value="feishuSettings.enableStreamingCards"
+                    :disabled="saving.feishu"
+                    @update:model-value="
+                      (value) => {
+                        if (!feishuSettings) {
+                          return
+                        }
+                        feishuSettings.enableStreamingCards = value === true
+                        queueFeishuSettingsPersist()
+                      }
+                    "
+                  />
+                </label>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultAgent') }}
+                    </Label>
+                    <Select
+                      :model-value="feishuSettings.defaultAgentId"
+                      @update:model-value="(value) => updateFeishuDefaultAgentId(String(value))"
+                    >
+                      <SelectTrigger class="h-8!">
+                        <SelectValue
+                          :placeholder="t('settings.remote.remoteControl.defaultAgentPlaceholder')"
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="agent in defaultAgentOptions(feishuSettings.defaultAgentId)"
+                          :key="agent.id"
+                          :value="agent.id"
+                        >
+                          {{ agent.name }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdir') }}
+                    </Label>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          class="h-8 w-full min-w-0 justify-between gap-1.5 px-2.5 text-xs"
+                          :title="defaultWorkdirTitle('feishu')"
+                        >
+                          <div class="flex min-w-0 items-center gap-1.5">
+                            <Icon
+                              icon="lucide:folder"
+                              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span class="truncate">{{ defaultWorkdirLabel('feishu') }}</span>
+                          </div>
+                          <Icon
+                            icon="lucide:chevron-down"
+                            class="h-3 w-3 shrink-0 text-muted-foreground"
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" class="w-[20rem]">
+                        <DropdownMenuItem
+                          v-for="project in directoryOptions('feishu')"
+                          :key="project.path"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="selectDefaultWorkdir('feishu', project.path)"
+                        >
+                          <Icon
+                            icon="lucide:folder"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <div class="truncate">{{ project.name }}</div>
+                            <div class="truncate text-[10px] text-muted-foreground">
+                              {{ project.path }}
+                            </div>
+                          </div>
+                          <Icon
+                            v-if="normalizePath(feishuSettings.defaultWorkdir) === project.path"
+                            icon="lucide:check"
+                            class="h-3.5 w-3.5 shrink-0"
+                          />
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="pickDefaultWorkdir('feishu')"
+                        >
+                          <Icon
+                            icon="lucide:folder-open"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.project.openFolder') }}</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-if="feishuSettings.defaultWorkdir"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="clearDefaultWorkdir('feishu')"
+                        >
+                          <Icon
+                            icon="lucide:x"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.clear') }}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdirHelper') }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    data-testid="feishu-bindings-button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="saving.feishu"
+                    @click="openBindingsDialog('feishu')"
+                  >
+                    {{ t('settings.remote.remoteControl.manageBindings') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="qqbot" class="space-y-4">
+            <div class="rounded-lg border bg-muted/20 p-4">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="text-base font-medium">{{ channelTitle('qqbot') }}</div>
+                    <span
+                      :class="[
+                        'inline-flex rounded-full px-2 py-1 text-[11px]',
+                        statusDotClass(qqbotStatus.state)
+                      ]"
+                    >
+                      {{ formatStatusLine(qqbotStatus) }}
+                    </span>
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.qqbot.description') }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ formatOverviewLine('qqbot') }}
+                  </p>
+                  <p v-if="qqbotStatus.lastError" class="break-all text-xs text-destructive">
+                    {{ qqbotStatus.lastError }}
+                  </p>
+                </div>
+                <label
+                  v-if="!props.hideChannelToggle"
+                  class="flex items-center gap-2 text-sm text-muted-foreground"
+                >
+                  <span>{{
+                    qqbotSettings.remoteEnabled ? t('common.enabled') : t('common.disabled')
+                  }}</span>
+                  <Switch
+                    data-testid="remote-channel-toggle-qqbot"
+                    :model-value="qqbotSettings.remoteEnabled"
+                    :disabled="saving.qqbot"
+                    @update:model-value="(value) => updateQQBotRemoteEnabled(value === true)"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.credentials') }}
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.qqbot.appId') }}
+                    </Label>
+                    <Input
+                      v-model="qqbotSettings.appId"
+                      :placeholder="t('settings.remote.qqbot.appIdPlaceholder')"
+                      @blur="queueQQBotSettingsPersist"
+                    />
+                  </div>
+
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.qqbot.clientSecret') }}
+                    </Label>
+                    <Input
+                      v-model="qqbotSettings.clientSecret"
+                      type="password"
+                      :placeholder="t('settings.remote.qqbot.clientSecretPlaceholder')"
+                      @blur="queueQQBotSettingsPersist"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.remoteControl') }}
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.qqbot.remoteControlDescription') }}
+                  </p>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultAgent') }}
+                    </Label>
+                    <Select
+                      :model-value="qqbotSettings.defaultAgentId"
+                      @update:model-value="(value) => updateQQBotDefaultAgentId(String(value))"
+                    >
+                      <SelectTrigger class="h-8!">
+                        <SelectValue
+                          :placeholder="t('settings.remote.remoteControl.defaultAgentPlaceholder')"
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="agent in defaultAgentOptions(qqbotSettings.defaultAgentId)"
+                          :key="agent.id"
+                          :value="agent.id"
+                        >
+                          {{ agent.name }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdir') }}
+                    </Label>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          class="h-8 w-full min-w-0 justify-between gap-1.5 px-2.5 text-xs"
+                          :title="defaultWorkdirTitle('qqbot')"
+                        >
+                          <div class="flex min-w-0 items-center gap-1.5">
+                            <Icon
+                              icon="lucide:folder"
+                              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span class="truncate">{{ defaultWorkdirLabel('qqbot') }}</span>
+                          </div>
+                          <Icon
+                            icon="lucide:chevron-down"
+                            class="h-3 w-3 shrink-0 text-muted-foreground"
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" class="w-[20rem]">
+                        <DropdownMenuItem
+                          v-for="project in directoryOptions('qqbot')"
+                          :key="project.path"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="selectDefaultWorkdir('qqbot', project.path)"
+                        >
+                          <Icon
+                            icon="lucide:folder"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <div class="truncate">{{ project.name }}</div>
+                            <div class="truncate text-[10px] text-muted-foreground">
+                              {{ project.path }}
+                            </div>
+                          </div>
+                          <Icon
+                            v-if="normalizePath(qqbotSettings.defaultWorkdir) === project.path"
+                            icon="lucide:check"
+                            class="h-3.5 w-3.5 shrink-0"
+                          />
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="pickDefaultWorkdir('qqbot')"
+                        >
+                          <Icon
+                            icon="lucide:folder-open"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.project.openFolder') }}</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-if="qqbotSettings.defaultWorkdir"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="clearDefaultWorkdir('qqbot')"
+                        >
+                          <Icon
+                            icon="lucide:x"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.clear') }}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdirHelper') }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="!qqbotSettings.remoteEnabled || saving.qqbot"
+                    @click="generatePairCodeAndOpenDialog('qqbot')"
+                  >
+                    {{ t('settings.remote.remoteControl.openPairDialog') }}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="saving.qqbot"
+                    @click="openBindingsDialog('qqbot')"
+                  >
+                    {{ t('settings.remote.remoteControl.manageBindings') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="discord" class="space-y-4">
+            <div class="rounded-lg border bg-muted/20 p-4">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="text-base font-medium">{{ channelTitle('discord') }}</div>
+                    <span
+                      :class="[
+                        'inline-flex rounded-full px-2 py-1 text-[11px]',
+                        statusDotClass(discordStatus.state)
+                      ]"
+                    >
+                      {{ formatStatusLine(discordStatus) }}
+                    </span>
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.discord.description') }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ formatOverviewLine('discord') }}
+                  </p>
+                  <p v-if="discordStatus.lastError" class="break-all text-xs text-destructive">
+                    {{ discordStatus.lastError }}
+                  </p>
+                </div>
+                <label
+                  v-if="!props.hideChannelToggle"
+                  class="flex items-center gap-2 text-sm text-muted-foreground"
+                >
+                  <span>{{
+                    discordSettings.remoteEnabled ? t('common.enabled') : t('common.disabled')
+                  }}</span>
+                  <Switch
+                    data-testid="remote-channel-toggle-discord"
+                    :model-value="discordSettings.remoteEnabled"
+                    :disabled="saving.discord"
+                    @update:model-value="(value) => updateDiscordRemoteEnabled(value === true)"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.credentials') }}
+                  </div>
+                </div>
+
+                <div class="space-y-2">
+                  <Label class="text-xs text-muted-foreground">
+                    {{ t('settings.remote.discord.botToken') }}
+                  </Label>
+                  <div class="relative w-full">
+                    <Input
+                      v-model="discordSettings.botToken"
+                      :type="showDiscordBotToken ? 'text' : 'password'"
+                      :placeholder="t('settings.remote.discord.botTokenPlaceholder')"
+                      class="pr-10"
+                      @blur="queueDiscordSettingsPersist"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="absolute right-2 top-1/2 h-7 w-7 -translate-y-1/2 p-0"
+                      @click="showDiscordBotToken = !showDiscordBotToken"
+                    >
+                      <Icon
+                        :icon="showDiscordBotToken ? 'lucide:eye-off' : 'lucide:eye'"
+                        class="h-4 w-4 text-muted-foreground"
+                      />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.remoteControl') }}
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.discord.remoteControlDescription') }}
+                  </p>
+                </div>
+
+                <div
+                  class="rounded-lg border border-dashed bg-muted/20 p-3 text-sm text-muted-foreground"
+                >
+                  <div>{{ t('settings.remote.discord.accessRule1') }}</div>
+                  <div class="mt-1">{{ t('settings.remote.discord.accessRule2') }}</div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultAgent') }}
+                    </Label>
+                    <Select
+                      :model-value="discordSettings.defaultAgentId"
+                      @update:model-value="(value) => updateDiscordDefaultAgentId(String(value))"
+                    >
+                      <SelectTrigger class="h-8!">
+                        <SelectValue
+                          :placeholder="t('settings.remote.remoteControl.defaultAgentPlaceholder')"
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="agent in defaultAgentOptions(discordSettings.defaultAgentId)"
+                          :key="agent.id"
+                          :value="agent.id"
+                        >
+                          {{ agent.name }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdir') }}
+                    </Label>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          class="h-8 w-full min-w-0 justify-between gap-1.5 px-2.5 text-xs"
+                          :title="defaultWorkdirTitle('discord')"
+                        >
+                          <div class="flex min-w-0 items-center gap-1.5">
+                            <Icon
+                              icon="lucide:folder"
+                              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span class="truncate">{{ defaultWorkdirLabel('discord') }}</span>
+                          </div>
+                          <Icon
+                            icon="lucide:chevron-down"
+                            class="h-3 w-3 shrink-0 text-muted-foreground"
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" class="w-[20rem]">
+                        <DropdownMenuItem
+                          v-for="project in directoryOptions('discord')"
+                          :key="project.path"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="selectDefaultWorkdir('discord', project.path)"
+                        >
+                          <Icon
+                            icon="lucide:folder"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <div class="truncate">{{ project.name }}</div>
+                            <div class="truncate text-[10px] text-muted-foreground">
+                              {{ project.path }}
+                            </div>
+                          </div>
+                          <Icon
+                            v-if="normalizePath(discordSettings.defaultWorkdir) === project.path"
+                            icon="lucide:check"
+                            class="h-3.5 w-3.5 shrink-0"
+                          />
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="pickDefaultWorkdir('discord')"
+                        >
+                          <Icon
+                            icon="lucide:folder-open"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.project.openFolder') }}</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-if="discordSettings.defaultWorkdir"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="clearDefaultWorkdir('discord')"
+                        >
+                          <Icon
+                            icon="lucide:x"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.clear') }}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdirHelper') }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    data-testid="discord-pair-button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="!discordSettings.remoteEnabled || saving.discord"
+                    @click="generatePairCodeAndOpenDialog('discord')"
+                  >
+                    {{ t('settings.remote.remoteControl.openPairDialog') }}
+                  </Button>
+                  <Button
+                    data-testid="discord-bindings-button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="saving.discord"
+                    @click="openBindingsDialog('discord')"
+                  >
+                    {{ t('settings.remote.remoteControl.manageBindings') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="weixin-ilink" class="space-y-4">
+            <div class="rounded-lg border bg-muted/20 p-4">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="text-base font-medium">{{ channelTitle('weixin-ilink') }}</div>
+                    <span
+                      :class="[
+                        'inline-flex rounded-full px-2 py-1 text-[11px]',
+                        statusDotClass(weixinIlinkStatus.state)
+                      ]"
+                    >
+                      {{ formatStatusLine(weixinIlinkStatus) }}
+                    </span>
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.weixinIlink.description') }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ formatOverviewLine('weixin-ilink') }}
+                  </p>
+                  <p v-if="weixinIlinkStatus.lastError" class="break-all text-xs text-destructive">
+                    {{ weixinIlinkStatus.lastError }}
+                  </p>
+                </div>
+                <label
+                  v-if="!props.hideChannelToggle"
+                  class="flex items-center gap-2 text-sm text-muted-foreground"
+                >
+                  <span>{{
+                    weixinIlinkSettings.remoteEnabled ? t('common.enabled') : t('common.disabled')
+                  }}</span>
+                  <Switch
+                    data-testid="remote-channel-toggle-weixin-ilink"
+                    :model-value="weixinIlinkSettings.remoteEnabled"
+                    :disabled="saving['weixin-ilink']"
+                    @update:model-value="(value) => updateWeixinIlinkRemoteEnabled(value === true)"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div
+                  class="rounded-lg border border-dashed bg-muted/20 p-3 text-sm text-muted-foreground"
+                >
+                  <div>{{ t('settings.remote.weixinIlink.loginDescription') }}</div>
+                  <div class="mt-1">{{ t('settings.remote.weixinIlink.ownerOnlyNotice') }}</div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    data-testid="weixin-ilink-connect-button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="weixinIlinkLoginBusy"
+                    @click="startWeixinIlinkLogin()"
+                  >
+                    <Icon
+                      :icon="weixinIlinkLoginBusy ? 'lucide:loader-2' : 'lucide:qr-code'"
+                      :class="['mr-1 h-4 w-4', weixinIlinkLoginBusy && 'animate-spin']"
+                    />
+                    {{ t('settings.remote.weixinIlink.connectButton') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="mb-3 space-y-1">
+                <div class="text-sm font-medium">
+                  {{ t('settings.remote.weixinIlink.accountsTitle') }}
+                </div>
+                <p class="text-sm text-muted-foreground">
+                  {{ t('settings.remote.weixinIlink.accountsDescription') }}
+                </p>
+              </div>
+
+              <div
+                v-if="weixinIlinkStatus.accounts.length === 0"
+                class="rounded-lg border border-dashed p-4 text-sm text-muted-foreground"
+              >
+                {{ t('settings.remote.weixinIlink.noAccounts') }}
+              </div>
+              <div v-else class="space-y-3">
+                <div
+                  v-for="account in weixinIlinkStatus.accounts"
+                  :key="account.accountId"
+                  class="rounded-lg border p-3"
+                >
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                      <div class="truncate text-sm font-medium">{{ account.accountId }}</div>
+                      <div class="mt-1 text-xs text-muted-foreground">
+                        {{
+                          t('settings.remote.weixinIlink.ownerUserId', {
+                            ownerUserId: account.ownerUserId
+                          })
+                        }}
+                      </div>
+                      <div class="mt-1 truncate text-xs text-muted-foreground">
+                        {{
+                          t('settings.remote.weixinIlink.baseUrl', {
+                            baseUrl: account.baseUrl
+                          })
+                        }}
+                      </div>
+                    </div>
+
+                    <div class="flex flex-col items-end gap-2">
+                      <span
+                        :class="[
+                          'inline-flex rounded-full px-2 py-1 text-[11px]',
+                          statusDotClass(account.state)
+                        ]"
+                      >
+                        {{ t(`settings.remote.status.states.${account.state}`) }}
+                      </span>
+                      <label class="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{{
+                          account.enabled ? t('common.enabled') : t('common.disabled')
+                        }}</span>
+                        <Switch
+                          :model-value="account.enabled"
+                          :disabled="saving['weixin-ilink']"
+                          @update:model-value="
+                            (value) =>
+                              toggleWeixinIlinkAccountEnabled(account.accountId, value === true)
+                          "
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 text-xs text-muted-foreground">
+                    {{
+                      t('settings.remote.weixinIlink.accountBindings', {
+                        count: account.bindingCount
+                      })
+                    }}
+                  </div>
+                  <div v-if="account.lastError" class="mt-2 break-all text-xs text-destructive">
+                    {{ account.lastError }}
+                  </div>
+
+                  <div class="mt-3 flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      :disabled="
+                        weixinIlinkAccountActionId === account.accountId || account.enabled !== true
+                      "
+                      @click="restartWeixinIlinkAccount(account.accountId)"
+                    >
+                      {{ t('settings.remote.weixinIlink.restartAccount') }}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      class="text-destructive hover:text-destructive"
+                      :disabled="weixinIlinkAccountActionId === account.accountId"
+                      @click="removeWeixinIlinkAccount(account.accountId)"
+                    >
+                      {{ t('settings.remote.weixinIlink.removeAccount') }}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-lg border p-4">
+              <div class="space-y-4">
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    {{ t('settings.remote.sections.remoteControl') }}
+                  </div>
+                  <p class="text-sm text-muted-foreground">
+                    {{ t('settings.remote.weixinIlink.remoteControlDescription') }}
+                  </p>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4">
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultAgent') }}
+                    </Label>
+                    <Select
+                      :model-value="weixinIlinkSettings.defaultAgentId"
+                      @update:model-value="
+                        (value) => updateWeixinIlinkDefaultAgentId(String(value))
+                      "
+                    >
+                      <SelectTrigger class="h-8!">
+                        <SelectValue
+                          :placeholder="t('settings.remote.remoteControl.defaultAgentPlaceholder')"
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="agent in defaultAgentOptions(weixinIlinkSettings.defaultAgentId)"
+                          :key="agent.id"
+                          :value="agent.id"
+                        >
+                          {{ agent.name }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdir') }}
+                    </Label>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          class="h-8 w-full min-w-0 justify-between gap-1.5 px-2.5 text-xs"
+                          :title="defaultWorkdirTitle('weixin-ilink')"
+                        >
+                          <div class="flex min-w-0 items-center gap-1.5">
+                            <Icon
+                              icon="lucide:folder"
+                              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span class="truncate">{{ defaultWorkdirLabel('weixin-ilink') }}</span>
+                          </div>
+                          <Icon
+                            icon="lucide:chevron-down"
+                            class="h-3 w-3 shrink-0 text-muted-foreground"
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" class="w-[20rem]">
+                        <DropdownMenuItem
+                          v-for="project in directoryOptions('weixin-ilink')"
+                          :key="project.path"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="selectDefaultWorkdir('weixin-ilink', project.path)"
+                        >
+                          <Icon
+                            icon="lucide:folder"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <div class="truncate">{{ project.name }}</div>
+                            <div class="truncate text-[10px] text-muted-foreground">
+                              {{ project.path }}
+                            </div>
+                          </div>
+                          <Icon
+                            v-if="
+                              normalizePath(weixinIlinkSettings.defaultWorkdir) === project.path
+                            "
+                            icon="lucide:check"
+                            class="h-3.5 w-3.5 shrink-0"
+                          />
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="pickDefaultWorkdir('weixin-ilink')"
+                        >
+                          <Icon
+                            icon="lucide:folder-open"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.project.openFolder') }}</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-if="weixinIlinkSettings.defaultWorkdir"
+                          class="gap-2 px-2 py-1.5 text-xs"
+                          @select="clearDefaultWorkdir('weixin-ilink')"
+                        >
+                          <Icon
+                            icon="lucide:x"
+                            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                          <span>{{ t('common.clear') }}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.remote.remoteControl.defaultWorkdirHelper') }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="saving['weixin-ilink']"
+                    @click="openBindingsDialog('weixin-ilink')"
+                  >
+                    {{ t('settings.remote.remoteControl.manageBindings') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </template>
+    </div>
+  </component>
+
+  <Dialog v-model:open="pairDialogVisible">
+    <DialogContent class="sm:max-w-md">
+      <div data-testid="remote-pair-dialog" class="space-y-6">
+        <DialogHeader>
+          <DialogTitle>
+            {{
+              t('settings.remote.remoteControl.pairDialogTitle', {
+                channel: pairDialogChannel ? channelTitle(pairDialogChannel) : ''
+              })
+            }}
+          </DialogTitle>
+          <DialogDescription>
+            {{
+              t('settings.remote.remoteControl.pairDialogDescription', {
+                channel: pairDialogChannel ? channelTitle(pairDialogChannel) : ''
+              })
+            }}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-4">
+          <div class="space-y-2">
+            <div class="text-xs text-muted-foreground">
+              {{ t('settings.remote.remoteControl.pairCode') }}
+            </div>
+            <div class="rounded-lg border bg-muted/30 px-3 py-2 font-mono text-lg tracking-[0.2em]">
+              {{ pairDialogCode || t('settings.remote.remoteControl.noPairCode') }}
+            </div>
+            <div v-if="pairDialogExpiresAt" class="text-xs text-muted-foreground">
+              {{
+                t('settings.remote.remoteControl.pairCodeExpiresAt', {
+                  time: formatTimestamp(pairDialogExpiresAt)
+                })
+              }}
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-dashed bg-muted/20 p-3 text-sm">
+            <div class="text-muted-foreground">
+              {{
+                pairDialogChannel === 'feishu'
+                  ? t('settings.remote.remoteControl.pairDialogInstructionFeishu')
+                  : pairDialogChannel === 'qqbot'
+                    ? t('settings.remote.remoteControl.pairDialogInstructionQQBot')
+                    : pairDialogChannel === 'discord'
+                      ? t('settings.remote.remoteControl.pairDialogInstructionDiscord')
+                      : t('settings.remote.remoteControl.pairDialogInstructionTelegram')
+              }}
+            </div>
+            <div class="mt-2 rounded-md bg-background px-3 py-2 font-mono text-sm">
+              /pair {{ pairDialogCode || '------' }}
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end">
+          <Button variant="outline" @click="cancelPairDialog">
+            {{ t('common.cancel') }}
+          </Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="feishuInstallQrDialogVisible">
+    <DialogContent class="sm:max-w-md">
+      <div data-testid="feishu-install-qr-dialog" class="space-y-6">
+        <DialogHeader>
+          <DialogTitle>{{ t('settings.remote.feishu.installQrTitle') }}</DialogTitle>
+          <DialogDescription>
+            {{ t('settings.remote.feishu.installQrDescription') }}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-4">
+          <div
+            class="rounded-lg border bg-muted/20 p-4 text-center"
+            data-testid="feishu-install-qr-code"
+            :data-qr-value="feishuInstallQrUrl"
+          >
+            <img
+              v-if="feishuInstallQrDataUrl"
+              :src="feishuInstallQrDataUrl"
+              :alt="t('settings.remote.feishu.installQrAlt')"
+              class="mx-auto h-56 w-56 rounded bg-white p-2"
+            />
+            <div v-else class="py-16 text-sm text-muted-foreground">
+              {{ t('common.loading') }}
+            </div>
+          </div>
+          <div v-if="feishuInstallUserCode" class="text-xs text-muted-foreground">
+            {{ t('settings.remote.feishu.installUserCode', { code: feishuInstallUserCode }) }}
+          </div>
+          <div v-if="feishuInstallMessage" class="text-xs text-muted-foreground">
+            {{ feishuInstallMessage }}
+          </div>
+          <div v-if="feishuInstallError" class="break-all text-xs text-destructive">
+            {{ feishuInstallError }}
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" :disabled="!feishuInstallQrUrl" @click="openFeishuInstallQrUrl">
+            {{ t('settings.remote.feishu.openInstallWeb') }}
+          </Button>
+          <Button variant="outline" @click="closeFeishuInstallQrDialog">
+            {{ feishuInstallBusy ? t('common.cancel') : t('common.close') }}
+          </Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="bindingsDialogOpen">
+    <DialogContent class="sm:max-w-lg">
+      <div data-testid="remote-bindings-dialog" class="space-y-6">
+        <DialogHeader>
+          <DialogTitle>
+            {{
+              t('settings.remote.remoteControl.bindingsDialogTitle', {
+                channel: bindingsDialogChannel ? channelTitle(bindingsDialogChannel) : ''
+              })
+            }}
+          </DialogTitle>
+          <DialogDescription>
+            {{
+              t('settings.remote.remoteControl.bindingsDialogDescription', {
+                channel: bindingsDialogChannel ? channelTitle(bindingsDialogChannel) : ''
+              })
+            }}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-3">
+          <div v-if="bindingsLoading" class="text-sm text-muted-foreground">
+            {{ t('common.loading') }}
+          </div>
+          <template v-else>
+            <div v-if="bindingsDialogSupportsPrincipals" class="space-y-3">
+              <div class="space-y-1">
+                <div class="text-sm font-medium">
+                  {{ t('settings.remote.remoteControl.authorizedPrincipalsTitle') }}
+                </div>
+                <p class="text-sm text-muted-foreground">
+                  {{
+                    t('settings.remote.remoteControl.authorizedPrincipalsDescription', {
+                      channel: bindingsDialogChannel ? channelTitle(bindingsDialogChannel) : ''
+                    })
+                  }}
+                </p>
+              </div>
+
+              <div
+                v-if="authorizedPrincipals.length === 0"
+                data-testid="remote-principals-empty"
+                class="rounded-lg border border-dashed p-4 text-sm text-muted-foreground"
+              >
+                {{ t('settings.remote.remoteControl.authorizedPrincipalsEmpty') }}
+              </div>
+              <div v-else class="space-y-2">
+                <div
+                  v-for="principalId in authorizedPrincipals"
+                  :key="principalId"
+                  :data-testid="`remote-principal-${principalId}`"
+                  class="flex items-center justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-sm font-medium">{{ principalId }}</div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="text-destructive hover:text-destructive"
+                    :disabled="principalRemovingId === principalId"
+                    @click="removePrincipal(principalId)"
+                  >
+                    {{ t('common.delete') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-3">
+              <div class="space-y-1">
+                <div class="text-sm font-medium">
+                  {{ t('settings.remote.remoteControl.sessionBindingsTitle') }}
+                </div>
+                <p class="text-sm text-muted-foreground">
+                  {{
+                    t('settings.remote.remoteControl.sessionBindingsDescription', {
+                      channel: bindingsDialogChannel ? channelTitle(bindingsDialogChannel) : ''
+                    })
+                  }}
+                </p>
+              </div>
+
+              <div
+                v-if="bindings.length === 0"
+                data-testid="remote-bindings-empty"
+                class="rounded-lg border border-dashed p-4 text-sm text-muted-foreground"
+              >
+                {{ t('settings.remote.remoteControl.bindingsEmpty') }}
+              </div>
+              <div v-else class="space-y-2">
+                <div
+                  v-for="binding in bindings"
+                  :key="binding.endpointKey"
+                  :data-testid="`remote-binding-${binding.endpointKey}`"
+                  class="flex items-center justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <div class="truncate text-sm font-medium">{{ binding.sessionId }}</div>
+                      <span
+                        :class="[
+                          'inline-flex rounded-full px-2 py-0.5 text-[11px]',
+                          bindingKindClass(binding.kind)
+                        ]"
+                      >
+                        {{ t(`settings.remote.bindingKinds.${binding.kind}`) }}
+                      </span>
+                    </div>
+                    <div class="mt-1 text-xs text-muted-foreground">
+                      {{ binding.channel }}:{{ binding.chatId
+                      }}{{ binding.threadId ? `:${binding.threadId}` : '' }}
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="text-destructive hover:text-destructive"
+                    :disabled="bindingRemovingKey === binding.endpointKey"
+                    @click="removeBinding(binding.endpointKey)"
+                  >
+                    {{ t('common.delete') }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <div class="flex justify-end">
+          <Button variant="outline" @click="bindingsDialogOpen = false">
+            {{ t('common.close') }}
+          </Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="weixinIlinkLoginVisible">
+    <DialogContent class="sm:max-w-lg">
+      <div class="space-y-6">
+        <DialogHeader>
+          <DialogTitle>{{ t('settings.remote.weixinIlink.loginDialogTitle') }}</DialogTitle>
+          <DialogDescription>
+            {{ t('settings.remote.weixinIlink.loginDialogDescription') }}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-4">
+          <div class="rounded-lg border bg-muted/20 p-3 text-sm">
+            <div class="text-muted-foreground">{{ weixinIlinkLoginMessage }}</div>
+            <div v-if="weixinIlinkLoginError" class="mt-2 break-all text-destructive">
+              {{ weixinIlinkLoginError }}
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <Button
+            variant="outline"
+            :disabled="weixinIlinkLoginBusy"
+            @click="restartWeixinIlinkLogin"
+          >
+            {{ t('settings.remote.weixinIlink.refreshQrCode') }}
+          </Button>
+          <Button variant="outline" @click="closeWeixinIlinkLoginDialog">
+            {{ t('common.close') }}
+          </Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, reactive, ref, toRaw, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import * as QRCode from 'qrcode'
+import { Icon } from '@iconify/vue'
+import { ScrollArea } from '@shadcn/components/ui/scroll-area'
+import { Switch } from '@shadcn/components/ui/switch'
+import { Input } from '@shadcn/components/ui/input'
+import { Button } from '@shadcn/components/ui/button'
+import { Label } from '@shadcn/components/ui/label'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@shadcn/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@shadcn/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@shadcn/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@shadcn/components/ui/tabs'
+import { createProjectClient } from '@api/ProjectClient'
+import { createRemoteControlClient } from '@api/RemoteControlClient'
+import { createSessionClient } from '@api/SessionClient'
+import { openRuntimeExternal } from '@api/runtime'
+import { useToast } from '@/components/use-toast'
+import { resolveAcpAgentAlias } from '@shared/utils/acpAgentAlias'
+import { isAcpDefaultWorkdirRequiredError } from '@shared/contracts/remoteControlErrors'
+import type { Agent, Project } from '@shared/types/agent-interface'
+import type {
+  DiscordPairingSnapshot,
+  DiscordRemoteSettings,
+  DiscordRemoteStatus,
+  FeishuAuthResult,
+  FeishuAuthSession,
+  FeishuInstallResult,
+  FeishuInstallSession,
+  FeishuPairingSnapshot,
+  FeishuRemoteSettings,
+  FeishuRemoteStatus,
+  PairableRemoteChannel,
+  RemoteBindingSummary,
+  RemoteChannel,
+  RemoteChannelDescriptor,
+  RemoteChannelSettings,
+  RemotePairingSnapshot,
+  RemoteRuntimeState,
+  RemoteChannelStatus,
+  QQBotPairingSnapshot,
+  QQBotRemoteSettings,
+  QQBotRemoteStatus,
+  TelegramPairingSnapshot,
+  TelegramRemoteSettings,
+  TelegramRemoteStatus,
+  WeixinIlinkLoginResult,
+  WeixinIlinkLoginSession,
+  WeixinIlinkRemoteSettings,
+  WeixinIlinkRemoteStatus
+} from '@shared/presenter'
+
+const fallbackChannelDescriptors: RemoteChannelDescriptor[] = [
+  {
+    id: 'telegram',
+    type: 'builtin',
+    implemented: true,
+    titleKey: 'settings.remote.telegram.title',
+    descriptionKey: 'settings.remote.telegram.description',
+    supportsPairing: true,
+    supportsNotifications: false
+  },
+  {
+    id: 'feishu',
+    type: 'builtin',
+    implemented: true,
+    titleKey: 'settings.remote.feishu.title',
+    descriptionKey: 'settings.remote.feishu.description',
+    supportsPairing: true,
+    supportsNotifications: false
+  },
+  {
+    id: 'qqbot',
+    type: 'builtin',
+    implemented: true,
+    titleKey: 'settings.remote.qqbot.title',
+    descriptionKey: 'settings.remote.qqbot.description',
+    supportsPairing: true,
+    supportsNotifications: false
+  },
+  {
+    id: 'discord',
+    type: 'builtin',
+    implemented: true,
+    titleKey: 'settings.remote.discord.title',
+    descriptionKey: 'settings.remote.discord.description',
+    supportsPairing: true,
+    supportsNotifications: false
+  },
+  {
+    id: 'weixin-ilink',
+    type: 'builtin',
+    implemented: true,
+    titleKey: 'settings.remote.weixinIlink.title',
+    descriptionKey: 'settings.remote.weixinIlink.description',
+    supportsPairing: false,
+    supportsNotifications: false
+  }
+]
+
+const remoteControlClient = createRemoteControlClient()
+const projectClient = createProjectClient()
+const sessionClient = createSessionClient()
+const { t } = useI18n()
+const { toast } = useToast()
+const props = defineProps<{
+  channel?: RemoteChannel
+  embedded?: boolean
+  hideHeader?: boolean
+  hideChannelToggle?: boolean
+  singleChannel?: boolean
+}>()
+
+const channelI18nKeyMap: Record<RemoteChannel, string> = {
+  telegram: 'telegram',
+  feishu: 'feishu',
+  qqbot: 'qqbot',
+  discord: 'discord',
+  'weixin-ilink': 'weixinIlink'
+}
+
+function channelTitle(channel: RemoteChannel | null | undefined): string {
+  if (!channel) {
+    return ''
+  }
+  return t(`settings.remote.${channelI18nKeyMap[channel]}.title`)
+}
+
+function channelDescription(channel: RemoteChannel | null | undefined): string {
+  if (!channel) {
+    return ''
+  }
+  return t(`settings.remote.${channelI18nKeyMap[channel]}.description`)
+}
+
+const telegramSettings = ref<TelegramRemoteSettings | null>(null)
+const feishuSettings = ref<FeishuRemoteSettings | null>(null)
+const qqbotSettings = ref<QQBotRemoteSettings | null>(null)
+const discordSettings = ref<DiscordRemoteSettings | null>(null)
+const weixinIlinkSettings = ref<WeixinIlinkRemoteSettings | null>(null)
+const telegramStatus = ref<TelegramRemoteStatus | null>(null)
+const feishuStatus = ref<FeishuRemoteStatus | null>(null)
+const qqbotStatus = ref<QQBotRemoteStatus | null>(null)
+const discordStatus = ref<DiscordRemoteStatus | null>(null)
+const weixinIlinkStatus = ref<WeixinIlinkRemoteStatus | null>(null)
+const channelDescriptors = ref<RemoteChannelDescriptor[]>(fallbackChannelDescriptors)
+const isLoading = ref(false)
+const showBotToken = ref(false)
+const showDiscordBotToken = ref(false)
+const availableAgents = ref<Agent[]>([])
+const recentProjects = ref<Project[]>([])
+const activeChannel = ref<RemoteChannel>('telegram')
+const pairDialogChannel = ref<PairableRemoteChannel | null>(null)
+const pairDialogOpen = ref(false)
+const pairDialogCode = ref<string | null>(null)
+const pairDialogExpiresAt = ref<number | null>(null)
+const pairDialogExpectedCode = ref<string | null>(null)
+const pairDialogInitialPrincipalIds = ref<string[]>([])
+const pairDialogCancelling = ref(false)
+const bindingsDialogChannel = ref<RemoteChannel | null>(null)
+const bindingsDialogOpen = ref(false)
+const bindingsLoading = ref(false)
+const bindingRemovingKey = ref<string | null>(null)
+const principalRemovingId = ref<string | null>(null)
+const bindings = ref<RemoteBindingSummary[]>([])
+const authorizedPrincipals = ref<string[]>([])
+const feishuAuthMessage = ref('')
+const feishuAuthError = ref<string | null>(null)
+const feishuAuthStarting = ref(false)
+const feishuAuthWaiting = ref(false)
+const feishuAuthSessionKey = ref<string | null>(null)
+const feishuInstallMessage = ref('')
+const feishuInstallError = ref<string | null>(null)
+const feishuInstallStarting = ref(false)
+const feishuInstallWaiting = ref(false)
+const feishuInstallSessionKey = ref<string | null>(null)
+const feishuInstallUserCode = ref('')
+const feishuInstallQrDialogOpen = ref(false)
+const feishuInstallQrUrl = ref('')
+const feishuInstallQrDataUrl = ref('')
+const feishuInstallMode = ref<'web' | 'qr' | null>(null)
+const weixinIlinkLoginMessage = ref('')
+const weixinIlinkLoginError = ref<string | null>(null)
+const weixinIlinkLoginStarting = ref(false)
+const weixinIlinkLoginWaiting = ref(false)
+const weixinIlinkLoginOpen = ref(false)
+const weixinIlinkAccountActionId = ref<string | null>(null)
+const saving = reactive<Record<RemoteChannel, boolean>>({
+  telegram: false,
+  feishu: false,
+  qqbot: false,
+  discord: false,
+  'weixin-ilink': false
+})
+const pendingSave = reactive<Record<RemoteChannel, boolean>>({
+  telegram: false,
+  feishu: false,
+  qqbot: false,
+  discord: false,
+  'weixin-ilink': false
+})
+const saveTasks: Record<RemoteChannel, Promise<void> | null> = {
+  telegram: null,
+  feishu: null,
+  qqbot: null,
+  discord: null,
+  'weixin-ilink': null
+}
+
+let statusRefreshTimer: ReturnType<typeof setInterval> | null = null
+let pairDialogRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+const defaultTelegramSettings = (): TelegramRemoteSettings => ({
+  botToken: '',
+  remoteEnabled: false,
+  defaultAgentId: 'deepchat',
+  defaultWorkdir: ''
+})
+
+const defaultFeishuSettings = (): FeishuRemoteSettings => ({
+  brand: 'feishu',
+  appId: '',
+  appSecret: '',
+  verificationToken: '',
+  encryptKey: '',
+  remoteEnabled: false,
+  enableStreamingCards: false,
+  defaultAgentId: 'deepchat',
+  defaultWorkdir: '',
+  pairedUserOpenIds: []
+})
+
+const defaultQQBotSettings = (): QQBotRemoteSettings => ({
+  appId: '',
+  clientSecret: '',
+  remoteEnabled: false,
+  defaultAgentId: 'deepchat',
+  defaultWorkdir: '',
+  pairedUserIds: []
+})
+
+const defaultDiscordSettings = (): DiscordRemoteSettings => ({
+  botToken: '',
+  remoteEnabled: false,
+  defaultAgentId: 'deepchat',
+  defaultWorkdir: '',
+  pairedChannelIds: []
+})
+
+const defaultWeixinIlinkSettings = (): WeixinIlinkRemoteSettings => ({
+  remoteEnabled: false,
+  defaultAgentId: 'deepchat',
+  defaultWorkdir: '',
+  accounts: []
+})
+
+const normalizeTelegramPairingSnapshot = (
+  snapshot: Partial<TelegramPairingSnapshot> | null | undefined
+): TelegramPairingSnapshot => ({
+  pairCode: snapshot?.pairCode ?? null,
+  pairCodeExpiresAt: snapshot?.pairCodeExpiresAt ?? null,
+  allowedUserIds: [...(snapshot?.allowedUserIds ?? [])]
+})
+
+const normalizeFeishuPairingSnapshot = (
+  snapshot: Partial<FeishuPairingSnapshot> | null | undefined
+): FeishuPairingSnapshot => ({
+  pairCode: snapshot?.pairCode ?? null,
+  pairCodeExpiresAt: snapshot?.pairCodeExpiresAt ?? null,
+  pairedUserOpenIds: [...(snapshot?.pairedUserOpenIds ?? [])]
+})
+
+const normalizeQQBotPairingSnapshot = (
+  snapshot: Partial<QQBotPairingSnapshot> | null | undefined
+): QQBotPairingSnapshot => ({
+  pairCode: snapshot?.pairCode ?? null,
+  pairCodeExpiresAt: snapshot?.pairCodeExpiresAt ?? null,
+  pairedUserIds: [...(snapshot?.pairedUserIds ?? [])],
+  pairedGroupIds: [...(snapshot?.pairedGroupIds ?? [])]
+})
+
+const normalizeDiscordPairingSnapshot = (
+  snapshot: Partial<DiscordPairingSnapshot> | null | undefined
+): DiscordPairingSnapshot => ({
+  pairCode: snapshot?.pairCode ?? null,
+  pairCodeExpiresAt: snapshot?.pairCodeExpiresAt ?? null,
+  pairedChannelIds: [...(snapshot?.pairedChannelIds ?? [])]
+})
+
+const listRemoteChannelsCompat = async (): Promise<RemoteChannelDescriptor[]> => {
+  return await remoteControlClient.listRemoteChannels()
+}
+
+function getChannelSettingsCompat(channel: 'telegram'): Promise<TelegramRemoteSettings>
+function getChannelSettingsCompat(channel: 'feishu'): Promise<FeishuRemoteSettings>
+function getChannelSettingsCompat(channel: 'qqbot'): Promise<QQBotRemoteSettings>
+function getChannelSettingsCompat(channel: 'discord'): Promise<DiscordRemoteSettings>
+function getChannelSettingsCompat(channel: 'weixin-ilink'): Promise<WeixinIlinkRemoteSettings>
+async function getChannelSettingsCompat(channel: RemoteChannel): Promise<RemoteChannelSettings> {
+  return await remoteControlClient.getChannelSettings(channel)
+}
+
+function saveChannelSettingsCompat(
+  channel: 'telegram',
+  input: TelegramRemoteSettings
+): Promise<TelegramRemoteSettings>
+function saveChannelSettingsCompat(
+  channel: 'feishu',
+  input: FeishuRemoteSettings
+): Promise<FeishuRemoteSettings>
+function saveChannelSettingsCompat(
+  channel: 'qqbot',
+  input: QQBotRemoteSettings
+): Promise<QQBotRemoteSettings>
+function saveChannelSettingsCompat(
+  channel: 'discord',
+  input: DiscordRemoteSettings
+): Promise<DiscordRemoteSettings>
+function saveChannelSettingsCompat(
+  channel: 'weixin-ilink',
+  input: WeixinIlinkRemoteSettings
+): Promise<WeixinIlinkRemoteSettings>
+async function saveChannelSettingsCompat(
+  channel: RemoteChannel,
+  input: RemoteChannelSettings
+): Promise<RemoteChannelSettings> {
+  return await remoteControlClient.saveChannelSettings(channel, input)
+}
+
+function getChannelStatusCompat(channel: 'telegram'): Promise<TelegramRemoteStatus>
+function getChannelStatusCompat(channel: 'feishu'): Promise<FeishuRemoteStatus>
+function getChannelStatusCompat(channel: 'qqbot'): Promise<QQBotRemoteStatus>
+function getChannelStatusCompat(channel: 'discord'): Promise<DiscordRemoteStatus>
+function getChannelStatusCompat(channel: 'weixin-ilink'): Promise<WeixinIlinkRemoteStatus>
+async function getChannelStatusCompat(channel: RemoteChannel): Promise<RemoteChannelStatus> {
+  return await remoteControlClient.getChannelStatus(channel)
+}
+
+const getChannelBindingsCompat = async (
+  channel: RemoteChannel
+): Promise<RemoteBindingSummary[]> => {
+  return await remoteControlClient.getChannelBindings(channel)
+}
+
+const removeChannelBindingCompat = async (
+  channel: RemoteChannel,
+  endpointKey: string
+): Promise<void> => {
+  await remoteControlClient.removeChannelBinding(channel, endpointKey)
+}
+
+const removeChannelPrincipalCompat = async (
+  channel: PairableRemoteChannel,
+  principalId: string
+): Promise<void> => {
+  await remoteControlClient.removeChannelPrincipal(channel, principalId)
+}
+
+const getChannelPairingSnapshotCompat = async (
+  channel: PairableRemoteChannel
+): Promise<RemotePairingSnapshot> => {
+  return await remoteControlClient.getChannelPairingSnapshot(channel)
+}
+
+const createChannelPairCodeCompat = async (
+  channel: PairableRemoteChannel
+): Promise<{
+  code: string
+  expiresAt: number
+}> => {
+  return await remoteControlClient.createChannelPairCode(channel)
+}
+
+const clearChannelPairCodeCompat = async (channel: PairableRemoteChannel): Promise<void> => {
+  await remoteControlClient.clearChannelPairCode(channel)
+}
+
+const startFeishuAuthCompat = async (input?: {
+  brand?: 'feishu' | 'lark'
+  appId?: string
+  appSecret?: string
+  redirectUri?: string
+}): Promise<FeishuAuthSession> => {
+  return await remoteControlClient.startFeishuAuth(input)
+}
+
+const waitForFeishuAuthCompat = async (input: {
+  sessionKey: string
+  timeoutMs?: number
+}): Promise<FeishuAuthResult> => {
+  return await remoteControlClient.waitForFeishuAuth(input)
+}
+
+const cancelFeishuAuthCompat = async (sessionKey: string): Promise<void> => {
+  await remoteControlClient.cancelFeishuAuth(sessionKey)
+}
+
+const startFeishuInstallCompat = async (input?: {
+  brand?: 'feishu' | 'lark'
+}): Promise<FeishuInstallSession> => {
+  return await remoteControlClient.startFeishuInstall(input)
+}
+
+const waitForFeishuInstallCompat = async (input: {
+  sessionKey: string
+  timeoutMs?: number
+}): Promise<FeishuInstallResult> => {
+  return await remoteControlClient.waitForFeishuInstall(input)
+}
+
+const cancelFeishuInstallCompat = async (sessionKey: string): Promise<void> => {
+  await remoteControlClient.cancelFeishuInstall(sessionKey)
+}
+
+const startWeixinIlinkLoginCompat = async (input?: {
+  force?: boolean
+}): Promise<WeixinIlinkLoginSession> => {
+  return await remoteControlClient.startWeixinIlinkLogin(input)
+}
+
+const waitForWeixinIlinkLoginCompat = async (input: {
+  sessionKey: string
+  timeoutMs?: number
+}): Promise<WeixinIlinkLoginResult> => {
+  return await remoteControlClient.waitForWeixinIlinkLogin(input)
+}
+
+const removeWeixinIlinkAccountCompat = async (accountId: string): Promise<void> => {
+  await remoteControlClient.removeWeixinIlinkAccount(accountId)
+}
+
+const restartWeixinIlinkAccountCompat = async (accountId: string): Promise<void> => {
+  await remoteControlClient.restartWeixinIlinkAccount(accountId)
+}
+
+const resolveRemoteMessage = (
+  input: {
+    message?: string | null
+    messageKey?: string | null
+  },
+  fallbackKey: string
+): string => {
+  if (input.messageKey?.trim()) {
+    return t(input.messageKey.trim())
+  }
+
+  if (input.message?.trim()) {
+    return input.message.trim()
+  }
+
+  return t(fallbackKey)
+}
+
+const resolveFeishuAuthMessage = (input: {
+  message?: string | null
+  messageKey?: string | null
+}): string => resolveRemoteMessage(input, 'settings.remote.feishu.authFailed')
+
+const resolveFeishuInstallMessage = (input: {
+  message?: string | null
+  messageKey?: string | null
+}): string => resolveRemoteMessage(input, 'settings.remote.feishu.installFailed')
+
+const resolveWeixinIlinkLoginMessage = (input: {
+  message?: string | null
+  messageKey?: string | null
+}): string => resolveRemoteMessage(input, 'settings.remote.weixinIlink.loginFailed')
+
+const implementedChannels = computed(() =>
+  channelDescriptors.value
+    .filter((descriptor) => descriptor.implemented)
+    .map((descriptor) => descriptor.id)
+)
+const implementedChannelCount = computed(() => Math.max(1, implementedChannels.value.length))
+const rootComponent = computed(() => (props.embedded ? 'div' : ScrollArea))
+const singleChannelMode = computed(() => Boolean(props.singleChannel || props.channel))
+const isRemoteChannel = (value: unknown): value is RemoteChannel =>
+  typeof value === 'string' &&
+  fallbackChannelDescriptors.some((descriptor) => descriptor.id === value)
+const syncActiveChannelFromProps = () => {
+  if (props.channel && isRemoteChannel(props.channel)) {
+    activeChannel.value = props.channel
+  }
+}
+const isAnySaving = computed(
+  () => saving.telegram || saving.feishu || saving.qqbot || saving.discord || saving['weixin-ilink']
+)
+const feishuAuthBusy = computed(() => feishuAuthStarting.value || feishuAuthWaiting.value)
+const feishuInstallBusy = computed(() => feishuInstallStarting.value || feishuInstallWaiting.value)
+const feishuInstallQrDialogVisible = computed({
+  get: () => feishuInstallQrDialogOpen.value,
+  set: (open: boolean) => {
+    if (open) {
+      feishuInstallQrDialogOpen.value = true
+      return
+    }
+
+    closeFeishuInstallQrDialog()
+  }
+})
+const isPairableChannel = (
+  channel: RemoteChannel | null | undefined
+): channel is PairableRemoteChannel =>
+  channel === 'telegram' || channel === 'feishu' || channel === 'qqbot' || channel === 'discord'
+const bindingsDialogSupportsPrincipals = computed(() =>
+  isPairableChannel(bindingsDialogChannel.value)
+)
+
+const formatAgentOptionName = (agent: Pick<Agent, 'name' | 'type'>) =>
+  agent.type === 'acp' ? `${agent.name} (ACP)` : agent.name
+
+const defaultAgentOptions = (currentAgentId: string) => {
+  const options = availableAgents.value
+    .filter((agent) => agent.enabled)
+    .map((agent) => ({
+      id: agent.id,
+      name: formatAgentOptionName(agent)
+    }))
+
+  if (currentAgentId && !options.some((agent) => agent.id === currentAgentId)) {
+    const aliasMatch = availableAgents.value.find(
+      (agent) =>
+        agent.enabled && resolveAcpAgentAlias(agent.id) === resolveAcpAgentAlias(currentAgentId)
+    )
+    options.unshift({
+      id: currentAgentId,
+      name: aliasMatch ? formatAgentOptionName(aliasMatch) : currentAgentId
+    })
+  }
+
+  return options
+}
+
+const normalizePath = (value: string | null | undefined) => {
+  const normalized = value?.trim()
+  return normalized ? normalized : null
+}
+
+const pathLabel = (value: string) => value.split(/[/\\]/).filter(Boolean).pop() || value
+
+const getChannelDefaultWorkdir = (channel: RemoteChannel): string => {
+  switch (channel) {
+    case 'telegram':
+      return telegramSettings.value?.defaultWorkdir ?? ''
+    case 'feishu':
+      return feishuSettings.value?.defaultWorkdir ?? ''
+    case 'qqbot':
+      return qqbotSettings.value?.defaultWorkdir ?? ''
+    case 'discord':
+      return discordSettings.value?.defaultWorkdir ?? ''
+    case 'weixin-ilink':
+      return weixinIlinkSettings.value?.defaultWorkdir ?? ''
+  }
+}
+
+const setChannelDefaultWorkdir = (channel: RemoteChannel, value: string) => {
+  if (channel === 'telegram' && telegramSettings.value) {
+    telegramSettings.value.defaultWorkdir = value
+    queueTelegramSettingsPersist()
+  } else if (channel === 'feishu' && feishuSettings.value) {
+    feishuSettings.value.defaultWorkdir = value
+    queueFeishuSettingsPersist()
+  } else if (channel === 'qqbot' && qqbotSettings.value) {
+    qqbotSettings.value.defaultWorkdir = value
+    queueQQBotSettingsPersist()
+  } else if (channel === 'discord' && discordSettings.value) {
+    discordSettings.value.defaultWorkdir = value
+    queueDiscordSettingsPersist()
+  } else if (channel === 'weixin-ilink' && weixinIlinkSettings.value) {
+    weixinIlinkSettings.value.defaultWorkdir = value
+    queueWeixinIlinkSettingsPersist()
+  }
+}
+
+const directoryOptions = (channel: RemoteChannel) => {
+  const normalizedCurrentPath = normalizePath(getChannelDefaultWorkdir(channel))
+  const options = new Map<string, { path: string; name: string }>()
+
+  if (normalizedCurrentPath) {
+    options.set(normalizedCurrentPath, {
+      path: normalizedCurrentPath,
+      name: pathLabel(normalizedCurrentPath)
+    })
+  }
+
+  for (const project of recentProjects.value) {
+    const normalized = normalizePath(project.path)
+    if (!normalized || options.has(normalized)) {
+      continue
+    }
+
+    options.set(normalized, {
+      path: normalized,
+      name: project.name || pathLabel(normalized)
+    })
+  }
+
+  return Array.from(options.values())
+}
+
+const defaultWorkdirLabel = (channel: RemoteChannel) => {
+  const normalized = normalizePath(getChannelDefaultWorkdir(channel))
+  return normalized
+    ? pathLabel(normalized)
+    : t('settings.remote.remoteControl.defaultWorkdirPlaceholder')
+}
+
+const defaultWorkdirTitle = (channel: RemoteChannel) =>
+  normalizePath(getChannelDefaultWorkdir(channel)) ??
+  t('settings.remote.remoteControl.defaultWorkdirPlaceholder')
+
+const pickDefaultWorkdir = async (channel: RemoteChannel) => {
+  try {
+    const selectedPath = await projectClient.selectDirectory()
+    if (selectedPath) {
+      setChannelDefaultWorkdir(channel, selectedPath)
+      void loadRecentProjects()
+    }
+  } catch (error) {
+    console.warn('[RemoteSettings] Failed to select default workdir:', error)
+  }
+}
+
+const selectDefaultWorkdir = (channel: RemoteChannel, projectPath: string) => {
+  setChannelDefaultWorkdir(channel, projectPath)
+}
+
+const clearDefaultWorkdir = (channel: RemoteChannel) => {
+  setChannelDefaultWorkdir(channel, '')
+}
+
+const pairDialogVisible = computed({
+  get: () => pairDialogOpen.value,
+  set: (open: boolean) => {
+    if (open) {
+      pairDialogOpen.value = true
+      return
+    }
+
+    void cancelPairDialog()
+  }
+})
+
+const weixinIlinkLoginVisible = computed({
+  get: () => weixinIlinkLoginOpen.value,
+  set: (open: boolean) => {
+    if (open) {
+      weixinIlinkLoginOpen.value = true
+      return
+    }
+
+    closeWeixinIlinkLoginDialog()
+  }
+})
+const weixinIlinkLoginBusy = computed(
+  () => weixinIlinkLoginStarting.value || weixinIlinkLoginWaiting.value
+)
+
+const syncTelegramFields = (snapshot: Partial<TelegramRemoteSettings> | null | undefined) => {
+  const fallback = defaultTelegramSettings()
+
+  telegramSettings.value = {
+    ...fallback,
+    ...snapshot
+  }
+}
+
+const syncFeishuFields = (snapshot: Partial<FeishuRemoteSettings> | null | undefined) => {
+  const fallback = defaultFeishuSettings()
+
+  feishuSettings.value = {
+    ...fallback,
+    ...snapshot
+  }
+}
+
+const syncQQBotFields = (snapshot: Partial<QQBotRemoteSettings> | null | undefined) => {
+  const fallback = defaultQQBotSettings()
+
+  qqbotSettings.value = {
+    ...fallback,
+    ...snapshot
+  }
+}
+
+const syncDiscordFields = (snapshot: Partial<DiscordRemoteSettings> | null | undefined) => {
+  const fallback = defaultDiscordSettings()
+
+  discordSettings.value = {
+    ...fallback,
+    ...snapshot
+  }
+}
+
+const syncWeixinIlinkFields = (snapshot: Partial<WeixinIlinkRemoteSettings> | null | undefined) => {
+  const fallback = defaultWeixinIlinkSettings()
+
+  weixinIlinkSettings.value = {
+    ...fallback,
+    ...snapshot,
+    accounts: [...(snapshot?.accounts ?? fallback.accounts)].map((account) => ({
+      accountId: String(account.accountId ?? '').trim(),
+      ownerUserId: String(account.ownerUserId ?? '').trim(),
+      baseUrl: String(account.baseUrl ?? '').trim(),
+      enabled: account.enabled !== false
+    }))
+  }
+}
+
+function channelStatus(channel: 'telegram'): TelegramRemoteStatus | null
+function channelStatus(channel: 'feishu'): FeishuRemoteStatus | null
+function channelStatus(channel: 'qqbot'): QQBotRemoteStatus | null
+function channelStatus(channel: 'discord'): DiscordRemoteStatus | null
+function channelStatus(channel: 'weixin-ilink'): WeixinIlinkRemoteStatus | null
+function channelStatus(channel: RemoteChannel): RemoteChannelStatus | null
+function channelStatus(channel: RemoteChannel): RemoteChannelStatus | null {
+  if (channel === 'telegram') {
+    return telegramStatus.value
+  }
+  if (channel === 'feishu') {
+    return feishuStatus.value
+  }
+  if (channel === 'qqbot') {
+    return qqbotStatus.value
+  }
+  if (channel === 'discord') {
+    return discordStatus.value
+  }
+  return weixinIlinkStatus.value
+}
+
+const getSnapshotPrincipalIds = (
+  channel: PairableRemoteChannel,
+  snapshot: RemotePairingSnapshot
+): string[] =>
+  channel === 'telegram'
+    ? normalizeTelegramPairingSnapshot(
+        snapshot as Partial<TelegramPairingSnapshot>
+      ).allowedUserIds.map((value) => String(value))
+    : channel === 'feishu'
+      ? normalizeFeishuPairingSnapshot(snapshot as Partial<FeishuPairingSnapshot>).pairedUserOpenIds
+      : channel === 'qqbot'
+        ? normalizeQQBotPairingSnapshot(snapshot as Partial<QQBotPairingSnapshot>).pairedUserIds
+        : normalizeDiscordPairingSnapshot(snapshot as Partial<DiscordPairingSnapshot>)
+            .pairedChannelIds
+
+const refreshStatus = async () => {
+  try {
+    const [
+      nextTelegramStatus,
+      nextFeishuStatus,
+      nextQQBotStatus,
+      nextDiscordStatus,
+      nextWeixinIlinkStatus
+    ] = await Promise.all([
+      getChannelStatusCompat('telegram'),
+      getChannelStatusCompat('feishu'),
+      getChannelStatusCompat('qqbot'),
+      getChannelStatusCompat('discord'),
+      getChannelStatusCompat('weixin-ilink')
+    ])
+    telegramStatus.value = nextTelegramStatus
+    feishuStatus.value = nextFeishuStatus
+    qqbotStatus.value = nextQQBotStatus
+    discordStatus.value = nextDiscordStatus
+    weixinIlinkStatus.value = nextWeixinIlinkStatus
+  } catch (error) {
+    console.warn('Failed to refresh remote channel status:', error)
+  }
+}
+
+const refreshPairingSnapshot = async (
+  channel: PairableRemoteChannel
+): Promise<RemotePairingSnapshot> => {
+  const snapshot = await getChannelPairingSnapshotCompat(channel)
+  if (pairDialogChannel.value === channel) {
+    pairDialogCode.value = snapshot.pairCode
+    pairDialogExpiresAt.value = snapshot.pairCodeExpiresAt
+  }
+  return snapshot
+}
+
+const loadAvailableAgents = async () => {
+  availableAgents.value = await sessionClient.getAgents()
+}
+
+const loadRecentProjects = async () => {
+  try {
+    const result = await projectClient.listRecent(8)
+    recentProjects.value = Array.isArray(result) ? result : []
+  } catch {
+    recentProjects.value = []
+  }
+}
+
+const loadState = async () => {
+  isLoading.value = true
+  try {
+    const [
+      loadedChannelDescriptors,
+      loadedTelegramSettings,
+      loadedFeishuSettings,
+      loadedQQBotSettings,
+      loadedDiscordSettings,
+      loadedWeixinIlinkSettings,
+      loadedTelegramStatus,
+      loadedFeishuStatus,
+      loadedQQBotStatus,
+      loadedDiscordStatus,
+      loadedWeixinIlinkStatus
+    ] = await Promise.all([
+      listRemoteChannelsCompat(),
+      getChannelSettingsCompat('telegram'),
+      getChannelSettingsCompat('feishu'),
+      getChannelSettingsCompat('qqbot'),
+      getChannelSettingsCompat('discord'),
+      getChannelSettingsCompat('weixin-ilink'),
+      getChannelStatusCompat('telegram'),
+      getChannelStatusCompat('feishu'),
+      getChannelStatusCompat('qqbot'),
+      getChannelStatusCompat('discord'),
+      getChannelStatusCompat('weixin-ilink'),
+      loadAvailableAgents(),
+      loadRecentProjects()
+    ])
+
+    channelDescriptors.value =
+      loadedChannelDescriptors.length > 0 ? loadedChannelDescriptors : fallbackChannelDescriptors
+    syncTelegramFields(loadedTelegramSettings)
+    syncFeishuFields(loadedFeishuSettings)
+    syncQQBotFields(loadedQQBotSettings)
+    syncDiscordFields(loadedDiscordSettings)
+    syncWeixinIlinkFields(loadedWeixinIlinkSettings)
+    telegramStatus.value = loadedTelegramStatus
+    feishuStatus.value = loadedFeishuStatus
+    qqbotStatus.value = loadedQQBotStatus
+    discordStatus.value = loadedDiscordStatus
+    weixinIlinkStatus.value = loadedWeixinIlinkStatus
+
+    syncActiveChannelFromProps()
+    if (!implementedChannels.value.includes(activeChannel.value)) {
+      activeChannel.value = implementedChannels.value[0] ?? 'telegram'
+    }
+  } catch (error) {
+    console.error('Failed to load remote settings:', error)
+    toast({
+      title: t('common.error.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive'
+    })
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const buildTelegramDraftSettings = (): TelegramRemoteSettings | null => {
+  if (!telegramSettings.value) {
+    return null
+  }
+
+  const settings = toRaw(telegramSettings.value)
+  return {
+    botToken: settings.botToken,
+    remoteEnabled: settings.remoteEnabled,
+    defaultAgentId: settings.defaultAgentId,
+    defaultWorkdir: settings.defaultWorkdir
+  }
+}
+
+const buildFeishuDraftSettings = (): FeishuRemoteSettings | null => {
+  if (!feishuSettings.value) {
+    return null
+  }
+
+  const settings = toRaw(feishuSettings.value)
+  return {
+    brand: settings.brand,
+    appId: settings.appId,
+    appSecret: settings.appSecret,
+    verificationToken: settings.verificationToken,
+    encryptKey: settings.encryptKey,
+    remoteEnabled: settings.remoteEnabled,
+    enableStreamingCards: settings.enableStreamingCards,
+    defaultAgentId: settings.defaultAgentId,
+    defaultWorkdir: settings.defaultWorkdir,
+    pairedUserOpenIds: [...(settings.pairedUserOpenIds ?? [])]
+  }
+}
+
+const buildQQBotDraftSettings = (): QQBotRemoteSettings | null => {
+  if (!qqbotSettings.value) {
+    return null
+  }
+
+  const settings = toRaw(qqbotSettings.value)
+  return {
+    appId: settings.appId,
+    clientSecret: settings.clientSecret,
+    remoteEnabled: settings.remoteEnabled,
+    defaultAgentId: settings.defaultAgentId,
+    defaultWorkdir: settings.defaultWorkdir,
+    pairedUserIds: [...(settings.pairedUserIds ?? [])]
+  }
+}
+
+const buildDiscordDraftSettings = (): DiscordRemoteSettings | null => {
+  if (!discordSettings.value) {
+    return null
+  }
+
+  const settings = toRaw(discordSettings.value)
+  return {
+    botToken: settings.botToken,
+    remoteEnabled: settings.remoteEnabled,
+    defaultAgentId: settings.defaultAgentId,
+    defaultWorkdir: settings.defaultWorkdir,
+    pairedChannelIds: [...(settings.pairedChannelIds ?? [])]
+  }
+}
+
+const buildWeixinIlinkDraftSettings = (): WeixinIlinkRemoteSettings | null => {
+  if (!weixinIlinkSettings.value) {
+    return null
+  }
+
+  const settings = toRaw(weixinIlinkSettings.value)
+  return {
+    remoteEnabled: settings.remoteEnabled,
+    defaultAgentId: settings.defaultAgentId,
+    defaultWorkdir: settings.defaultWorkdir,
+    accounts: (settings.accounts ?? []).map((account) => ({
+      accountId: String(account.accountId ?? '').trim(),
+      ownerUserId: String(account.ownerUserId ?? '').trim(),
+      baseUrl: String(account.baseUrl ?? '').trim(),
+      enabled: account.enabled !== false
+    }))
+  }
+}
+
+const toastSaveError = (error: unknown) => {
+  if (isAcpDefaultWorkdirRequiredError(error)) {
+    toast({
+      title: t('settings.remote.remoteControl.acpDefaultWorkdirRequiredTitle'),
+      description: t('settings.remote.remoteControl.acpDefaultWorkdirRequiredDescription'),
+      variant: 'destructive'
+    })
+    return
+  }
+
+  toast({
+    title: t('common.error.operationFailed'),
+    description: error instanceof Error ? error.message : String(error),
+    variant: 'destructive'
+  })
+}
+
+const persistChannelSettings = async (channel: RemoteChannel): Promise<void> => {
+  pendingSave[channel] = true
+
+  if (saveTasks[channel]) {
+    await saveTasks[channel]
+    return
+  }
+
+  const task = (async () => {
+    while (pendingSave[channel]) {
+      pendingSave[channel] = false
+      saving[channel] = true
+
+      try {
+        if (channel === 'telegram') {
+          const nextSettings = buildTelegramDraftSettings()
+          if (!nextSettings) {
+            return
+          }
+
+          const saved = await saveChannelSettingsCompat('telegram', nextSettings)
+          syncTelegramFields(saved)
+        } else if (channel === 'feishu') {
+          const nextSettings = buildFeishuDraftSettings()
+          if (!nextSettings) {
+            return
+          }
+
+          const saved = await saveChannelSettingsCompat('feishu', nextSettings)
+          syncFeishuFields(saved)
+        } else if (channel === 'qqbot') {
+          const nextSettings = buildQQBotDraftSettings()
+          if (!nextSettings) {
+            return
+          }
+
+          const saved = await saveChannelSettingsCompat('qqbot', nextSettings)
+          syncQQBotFields(saved)
+        } else if (channel === 'discord') {
+          const nextSettings = buildDiscordDraftSettings()
+          if (!nextSettings) {
+            return
+          }
+
+          const saved = await saveChannelSettingsCompat('discord', nextSettings)
+          syncDiscordFields(saved)
+        } else {
+          const nextSettings = buildWeixinIlinkDraftSettings()
+          if (!nextSettings) {
+            return
+          }
+
+          const saved = await saveChannelSettingsCompat('weixin-ilink', nextSettings)
+          syncWeixinIlinkFields(saved)
+        }
+
+        await Promise.all([refreshStatus(), loadAvailableAgents()])
+      } catch (error) {
+        console.error(`Failed to save ${channel} remote settings:`, error)
+        toastSaveError(error)
+        throw error
+      } finally {
+        saving[channel] = false
+      }
+    }
+  })()
+
+  saveTasks[channel] = task
+
+  try {
+    await task
+  } finally {
+    if (saveTasks[channel] === task) {
+      saveTasks[channel] = null
+    }
+  }
+}
+
+const persistTelegramSettings = async () => {
+  await persistChannelSettings('telegram')
+}
+
+const persistFeishuSettings = async () => {
+  await persistChannelSettings('feishu')
+}
+
+const persistQQBotSettings = async () => {
+  await persistChannelSettings('qqbot')
+}
+
+const persistDiscordSettings = async () => {
+  await persistChannelSettings('discord')
+}
+
+const persistWeixinIlinkSettings = async () => {
+  await persistChannelSettings('weixin-ilink')
+}
+
+const queueTelegramSettingsPersist = () => {
+  void persistTelegramSettings().catch(() => undefined)
+}
+
+const queueFeishuSettingsPersist = () => {
+  void persistFeishuSettings().catch(() => undefined)
+}
+
+const queueQQBotSettingsPersist = () => {
+  void persistQQBotSettings().catch(() => undefined)
+}
+
+const queueDiscordSettingsPersist = () => {
+  void persistDiscordSettings().catch(() => undefined)
+}
+
+const queueWeixinIlinkSettingsPersist = () => {
+  void persistWeixinIlinkSettings().catch(() => undefined)
+}
+
+const updateTelegramRemoteEnabled = (value: boolean) => {
+  if (!telegramSettings.value) {
+    return
+  }
+  telegramSettings.value.remoteEnabled = Boolean(value)
+  queueTelegramSettingsPersist()
+}
+
+const updateFeishuRemoteEnabled = (value: boolean) => {
+  if (!feishuSettings.value) {
+    return
+  }
+  feishuSettings.value.remoteEnabled = Boolean(value)
+  queueFeishuSettingsPersist()
+}
+
+const updateQQBotRemoteEnabled = (value: boolean) => {
+  if (!qqbotSettings.value) {
+    return
+  }
+  qqbotSettings.value.remoteEnabled = Boolean(value)
+  queueQQBotSettingsPersist()
+}
+
+const updateDiscordRemoteEnabled = (value: boolean) => {
+  if (!discordSettings.value) {
+    return
+  }
+  discordSettings.value.remoteEnabled = Boolean(value)
+  queueDiscordSettingsPersist()
+}
+
+const updateWeixinIlinkRemoteEnabled = (value: boolean) => {
+  if (!weixinIlinkSettings.value) {
+    return
+  }
+  weixinIlinkSettings.value.remoteEnabled = Boolean(value)
+  queueWeixinIlinkSettingsPersist()
+}
+
+const updateTelegramDefaultAgentId = (value: string) => {
+  if (!telegramSettings.value) {
+    return
+  }
+  telegramSettings.value.defaultAgentId = value
+  queueTelegramSettingsPersist()
+}
+
+const updateFeishuDefaultAgentId = (value: string) => {
+  if (!feishuSettings.value) {
+    return
+  }
+  feishuSettings.value.defaultAgentId = value
+  queueFeishuSettingsPersist()
+}
+
+const updateQQBotDefaultAgentId = (value: string) => {
+  if (!qqbotSettings.value) {
+    return
+  }
+  qqbotSettings.value.defaultAgentId = value
+  queueQQBotSettingsPersist()
+}
+
+const updateDiscordDefaultAgentId = (value: string) => {
+  if (!discordSettings.value) {
+    return
+  }
+  discordSettings.value.defaultAgentId = value
+  queueDiscordSettingsPersist()
+}
+
+const updateWeixinIlinkDefaultAgentId = (value: string) => {
+  if (!weixinIlinkSettings.value) {
+    return
+  }
+  weixinIlinkSettings.value.defaultAgentId = value
+  queueWeixinIlinkSettingsPersist()
+}
+
+let feishuAuthRequestId = 0
+let feishuInstallRequestId = 0
+let weixinIlinkLoginRequestId = 0
+let remoteSettingsUnmounted = false
+
+const generateFeishuInstallQrDataUrl = async (installUrl: string): Promise<string> => {
+  return await QRCode.toDataURL(installUrl, {
+    errorCorrectionLevel: 'M',
+    margin: 2,
+    width: 256,
+    color: {
+      dark: '#000000ff',
+      light: '#ffffffff'
+    }
+  })
+}
+
+const waitForFeishuInstallResult = async (requestId: number, sessionKey: string) => {
+  if (requestId !== feishuInstallRequestId) {
+    return
+  }
+
+  feishuInstallWaiting.value = true
+
+  try {
+    const result = await waitForFeishuInstallCompat({
+      sessionKey,
+      timeoutMs: 5 * 60_000
+    })
+    if (requestId !== feishuInstallRequestId) {
+      return
+    }
+
+    feishuInstallMessage.value = resolveFeishuInstallMessage(result)
+    feishuInstallError.value = result.installed ? null : feishuInstallMessage.value
+
+    if (result.installed) {
+      const [settings, status] = await Promise.all([
+        getChannelSettingsCompat('feishu'),
+        getChannelStatusCompat('feishu')
+      ])
+      if (requestId !== feishuInstallRequestId) {
+        return
+      }
+
+      syncFeishuFields(settings)
+      feishuStatus.value = status
+
+      toast({
+        title: t('settings.remote.feishu.installSuccessTitle'),
+        description: result.appId
+          ? t('settings.remote.feishu.installSuccessDescription', { appId: result.appId })
+          : feishuInstallMessage.value
+      })
+      feishuInstallQrDialogOpen.value = false
+      feishuInstallMode.value = null
+    }
+  } catch (error) {
+    if (requestId !== feishuInstallRequestId) {
+      return
+    }
+
+    feishuInstallError.value = error instanceof Error ? error.message : String(error)
+    feishuInstallMessage.value = t('settings.remote.feishu.installFailed')
+  } finally {
+    if (requestId === feishuInstallRequestId) {
+      feishuInstallWaiting.value = false
+      feishuInstallSessionKey.value = null
+      if (!feishuInstallQrDialogOpen.value) {
+        feishuInstallMode.value = null
+      }
+    }
+  }
+}
+
+const startFeishuInstall = async (mode: 'web' | 'qr') => {
+  if (feishuInstallBusy.value || !feishuSettings.value) {
+    return
+  }
+
+  const requestId = ++feishuInstallRequestId
+  feishuInstallMode.value = mode
+  feishuInstallMessage.value = t('common.loading')
+  feishuInstallError.value = null
+  feishuInstallUserCode.value = ''
+  feishuInstallQrUrl.value = ''
+  feishuInstallQrDataUrl.value = ''
+  feishuInstallQrDialogOpen.value = mode === 'qr'
+  feishuInstallStarting.value = true
+  feishuInstallWaiting.value = false
+
+  let sessionKeyToCancel: string | null = null
+
+  try {
+    const session = await startFeishuInstallCompat({
+      brand: feishuSettings.value.brand
+    })
+    sessionKeyToCancel = session.sessionKey
+    if (requestId !== feishuInstallRequestId) {
+      await cancelFeishuInstallCompat(session.sessionKey).catch(() => undefined)
+      return
+    }
+
+    feishuInstallSessionKey.value = session.sessionKey
+    feishuInstallUserCode.value = session.userCode
+    feishuInstallMessage.value = resolveFeishuInstallMessage(session)
+
+    if (mode === 'qr') {
+      feishuInstallQrUrl.value = session.installUrl
+      const qrDataUrl = await generateFeishuInstallQrDataUrl(session.installUrl)
+      if (requestId !== feishuInstallRequestId) {
+        await cancelFeishuInstallCompat(session.sessionKey).catch(() => undefined)
+        return
+      }
+      feishuInstallQrDataUrl.value = qrDataUrl
+    } else {
+      await openExternalUrl(session.installUrl)
+    }
+
+    void waitForFeishuInstallResult(requestId, session.sessionKey)
+  } catch (error) {
+    if (requestId !== feishuInstallRequestId) {
+      return
+    }
+
+    if (sessionKeyToCancel) {
+      await cancelFeishuInstallCompat(sessionKeyToCancel).catch(() => undefined)
+      feishuInstallSessionKey.value = null
+    }
+    if (remoteSettingsUnmounted) {
+      return
+    }
+    feishuInstallError.value = error instanceof Error ? error.message : String(error)
+    feishuInstallMessage.value = t('settings.remote.feishu.installFailed')
+  } finally {
+    if (requestId === feishuInstallRequestId) {
+      feishuInstallStarting.value = false
+    }
+  }
+}
+
+const cancelFeishuInstall = async (resetUi = true) => {
+  feishuInstallRequestId += 1
+  const sessionKey = feishuInstallSessionKey.value
+  feishuInstallSessionKey.value = null
+  feishuInstallStarting.value = false
+  feishuInstallWaiting.value = false
+  if (resetUi) {
+    feishuInstallUserCode.value = ''
+    feishuInstallMessage.value = ''
+    feishuInstallError.value = null
+    feishuInstallQrUrl.value = ''
+    feishuInstallQrDataUrl.value = ''
+    feishuInstallQrDialogOpen.value = false
+    feishuInstallMode.value = null
+  }
+  if (sessionKey) {
+    await cancelFeishuInstallCompat(sessionKey).catch(() => undefined)
+  }
+}
+
+const closeFeishuInstallQrDialog = () => {
+  if (feishuInstallBusy.value) {
+    void cancelFeishuInstall()
+    return
+  }
+
+  feishuInstallQrDialogOpen.value = false
+}
+
+const openFeishuInstallQrUrl = async () => {
+  if (!feishuInstallQrUrl.value) {
+    return
+  }
+
+  await openExternalUrl(feishuInstallQrUrl.value)
+}
+
+const waitForFeishuAuthResult = async (requestId: number, sessionKey: string) => {
+  if (requestId !== feishuAuthRequestId) {
+    return
+  }
+
+  feishuAuthWaiting.value = true
+
+  try {
+    const result = await waitForFeishuAuthCompat({
+      sessionKey,
+      timeoutMs: 5 * 60_000
+    })
+    if (requestId !== feishuAuthRequestId) {
+      return
+    }
+
+    feishuAuthMessage.value = resolveFeishuAuthMessage(result)
+    feishuAuthError.value = result.authorized ? null : feishuAuthMessage.value
+
+    if (result.authorized) {
+      const [settings, status] = await Promise.all([
+        getChannelSettingsCompat('feishu'),
+        getChannelStatusCompat('feishu')
+      ])
+      if (requestId !== feishuAuthRequestId) {
+        return
+      }
+
+      syncFeishuFields(settings)
+      feishuStatus.value = status
+
+      toast({
+        title: t('settings.remote.feishu.authSuccessTitle'),
+        description: result.openId
+          ? t('settings.remote.feishu.authSuccessDescription', { openId: result.openId })
+          : feishuAuthMessage.value
+      })
+    }
+  } catch (error) {
+    if (requestId !== feishuAuthRequestId) {
+      return
+    }
+
+    feishuAuthError.value = error instanceof Error ? error.message : String(error)
+    feishuAuthMessage.value = t('settings.remote.feishu.authFailed')
+  } finally {
+    if (requestId === feishuAuthRequestId) {
+      feishuAuthWaiting.value = false
+      feishuAuthSessionKey.value = null
+    }
+  }
+}
+
+const startFeishuScanAuth = async () => {
+  if (feishuAuthBusy.value || !feishuSettings.value) {
+    return
+  }
+
+  if (!(await persistChannelDraftOrAbort('feishu'))) {
+    return
+  }
+  if (remoteSettingsUnmounted) {
+    return
+  }
+
+  const requestId = ++feishuAuthRequestId
+  feishuAuthMessage.value = t('common.loading')
+  feishuAuthError.value = null
+  feishuAuthStarting.value = true
+  feishuAuthWaiting.value = false
+
+  let sessionKeyToCancel: string | null = null
+
+  try {
+    const settings = feishuSettings.value
+    const session = await startFeishuAuthCompat({
+      brand: settings.brand,
+      appId: settings.appId,
+      appSecret: settings.appSecret
+    })
+    sessionKeyToCancel = session.sessionKey
+    if (requestId !== feishuAuthRequestId) {
+      await cancelFeishuAuthCompat(session.sessionKey).catch(() => undefined)
+      return
+    }
+
+    feishuAuthSessionKey.value = session.sessionKey
+    feishuAuthMessage.value = resolveFeishuAuthMessage(session)
+    void waitForFeishuAuthResult(requestId, session.sessionKey)
+  } catch (error) {
+    if (requestId !== feishuAuthRequestId) {
+      return
+    }
+
+    if (sessionKeyToCancel) {
+      await cancelFeishuAuthCompat(sessionKeyToCancel).catch(() => undefined)
+      feishuAuthSessionKey.value = null
+    }
+    if (remoteSettingsUnmounted) {
+      return
+    }
+
+    feishuAuthError.value = error instanceof Error ? error.message : String(error)
+    feishuAuthMessage.value = t('settings.remote.feishu.authFailed')
+  } finally {
+    if (requestId === feishuAuthRequestId) {
+      feishuAuthStarting.value = false
+    }
+  }
+}
+
+const cancelFeishuScanAuth = async (resetUi = true) => {
+  feishuAuthRequestId += 1
+  const sessionKey = feishuAuthSessionKey.value
+  feishuAuthSessionKey.value = null
+  feishuAuthStarting.value = false
+  feishuAuthWaiting.value = false
+  if (resetUi) {
+    feishuAuthMessage.value = ''
+    feishuAuthError.value = null
+  }
+  if (sessionKey) {
+    await cancelFeishuAuthCompat(sessionKey).catch(() => undefined)
+  }
+}
+
+const closeWeixinIlinkLoginDialog = () => {
+  weixinIlinkLoginRequestId += 1
+  weixinIlinkLoginOpen.value = false
+  weixinIlinkLoginMessage.value = ''
+  weixinIlinkLoginError.value = null
+  weixinIlinkLoginStarting.value = false
+  weixinIlinkLoginWaiting.value = false
+}
+
+const waitForWeixinIlinkLoginResult = async (requestId: number, sessionKey: string) => {
+  weixinIlinkLoginWaiting.value = true
+
+  try {
+    const result = await waitForWeixinIlinkLoginCompat({
+      sessionKey,
+      timeoutMs: 8 * 60_000
+    })
+    if (requestId !== weixinIlinkLoginRequestId) {
+      return
+    }
+
+    weixinIlinkLoginMessage.value = resolveWeixinIlinkLoginMessage(result)
+    weixinIlinkLoginError.value = result.connected ? null : weixinIlinkLoginMessage.value
+
+    if (result.connected) {
+      await Promise.all([
+        (async () => {
+          const settings = await getChannelSettingsCompat('weixin-ilink')
+          syncWeixinIlinkFields(settings)
+        })(),
+        refreshStatus(),
+        loadAvailableAgents()
+      ])
+
+      toast({
+        title: t('settings.remote.weixinIlink.loginSuccessTitle'),
+        description: result.account
+          ? t('settings.remote.weixinIlink.loginSuccessDescription', {
+              accountId: result.account.accountId
+            })
+          : weixinIlinkLoginMessage.value
+      })
+
+      closeWeixinIlinkLoginDialog()
+    }
+  } catch (error) {
+    if (requestId !== weixinIlinkLoginRequestId) {
+      return
+    }
+
+    weixinIlinkLoginError.value = error instanceof Error ? error.message : String(error)
+    weixinIlinkLoginMessage.value = t('settings.remote.weixinIlink.loginFailed')
+  } finally {
+    if (requestId === weixinIlinkLoginRequestId) {
+      weixinIlinkLoginWaiting.value = false
+    }
+  }
+}
+
+const startWeixinIlinkLogin = async (force = false) => {
+  if (weixinIlinkLoginBusy.value) {
+    return
+  }
+
+  if (!(await persistChannelDraftOrAbort('weixin-ilink'))) {
+    return
+  }
+
+  const requestId = ++weixinIlinkLoginRequestId
+  weixinIlinkLoginOpen.value = true
+  weixinIlinkLoginMessage.value = t('common.loading')
+  weixinIlinkLoginError.value = null
+  weixinIlinkLoginStarting.value = true
+  weixinIlinkLoginWaiting.value = false
+
+  try {
+    const session = await startWeixinIlinkLoginCompat({ force })
+    if (requestId !== weixinIlinkLoginRequestId) {
+      return
+    }
+
+    weixinIlinkLoginMessage.value = resolveWeixinIlinkLoginMessage(session)
+    void waitForWeixinIlinkLoginResult(requestId, session.sessionKey)
+  } catch (error) {
+    if (requestId !== weixinIlinkLoginRequestId) {
+      return
+    }
+
+    weixinIlinkLoginError.value = error instanceof Error ? error.message : String(error)
+    weixinIlinkLoginMessage.value = t('settings.remote.weixinIlink.loginFailed')
+  } finally {
+    if (requestId === weixinIlinkLoginRequestId) {
+      weixinIlinkLoginStarting.value = false
+    }
+  }
+}
+
+const restartWeixinIlinkLogin = async () => {
+  await startWeixinIlinkLogin(true)
+}
+
+const toggleWeixinIlinkAccountEnabled = (accountId: string, value: boolean) => {
+  if (!weixinIlinkSettings.value) {
+    return
+  }
+
+  weixinIlinkSettings.value.accounts = weixinIlinkSettings.value.accounts.map((account) =>
+    account.accountId === accountId ? { ...account, enabled: Boolean(value) } : account
+  )
+  queueWeixinIlinkSettingsPersist()
+}
+
+const removeWeixinIlinkAccount = async (accountId: string) => {
+  weixinIlinkAccountActionId.value = accountId
+  try {
+    await removeWeixinIlinkAccountCompat(accountId)
+    const [settings, status] = await Promise.all([
+      getChannelSettingsCompat('weixin-ilink'),
+      getChannelStatusCompat('weixin-ilink')
+    ])
+    syncWeixinIlinkFields(settings)
+    weixinIlinkStatus.value = status
+  } catch (error) {
+    toastSaveError(error)
+  } finally {
+    weixinIlinkAccountActionId.value = null
+  }
+}
+
+const restartWeixinIlinkAccount = async (accountId: string) => {
+  weixinIlinkAccountActionId.value = accountId
+  try {
+    await restartWeixinIlinkAccountCompat(accountId)
+    await refreshStatus()
+  } catch (error) {
+    toastSaveError(error)
+  } finally {
+    weixinIlinkAccountActionId.value = null
+  }
+}
+
+const stopPairDialogPolling = () => {
+  if (pairDialogRefreshTimer) {
+    clearInterval(pairDialogRefreshTimer)
+    pairDialogRefreshTimer = null
+  }
+}
+
+const closePairDialogState = () => {
+  stopPairDialogPolling()
+  pairDialogOpen.value = false
+  pairDialogChannel.value = null
+  pairDialogCode.value = null
+  pairDialogExpiresAt.value = null
+  pairDialogExpectedCode.value = null
+  pairDialogInitialPrincipalIds.value = []
+}
+
+const pollPairingSnapshot = async () => {
+  if (!pairDialogOpen.value || !pairDialogExpectedCode.value || !pairDialogChannel.value) {
+    return
+  }
+
+  try {
+    const snapshot = await refreshPairingSnapshot(pairDialogChannel.value)
+    const principalIds = getSnapshotPrincipalIds(pairDialogChannel.value, snapshot)
+    const principalsChanged =
+      principalIds.join(',') !== pairDialogInitialPrincipalIds.value.join(',')
+    const pairCodeConsumed =
+      snapshot.pairCode !== pairDialogExpectedCode.value && !snapshot.pairCode?.trim()
+
+    if (!pairCodeConsumed) {
+      return
+    }
+
+    await refreshStatus()
+    if (bindingsDialogChannel.value === pairDialogChannel.value) {
+      await loadBindingsDialogState(pairDialogChannel.value)
+    }
+
+    if (!pairDialogCancelling.value && principalsChanged) {
+      toast({
+        title: t('settings.remote.remoteControl.pairingSuccessTitle'),
+        description: t('settings.remote.remoteControl.pairingSuccessDescription')
+      })
+    }
+
+    closePairDialogState()
+  } catch (error) {
+    console.warn('[RemoteSettings] Failed to poll pairing snapshot:', error)
+  }
+}
+
+const startPairDialogPolling = () => {
+  stopPairDialogPolling()
+  pairDialogRefreshTimer = setInterval(() => {
+    void pollPairingSnapshot()
+  }, 2_000)
+}
+
+const persistChannelDraftOrAbort = async (channel: RemoteChannel): Promise<boolean> => {
+  try {
+    if (channel === 'telegram') {
+      await persistTelegramSettings()
+    } else if (channel === 'feishu') {
+      await persistFeishuSettings()
+    } else if (channel === 'qqbot') {
+      await persistQQBotSettings()
+    } else if (channel === 'discord') {
+      await persistDiscordSettings()
+    } else {
+      await persistWeixinIlinkSettings()
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+const generatePairCodeAndOpenDialog = async (channel: PairableRemoteChannel) => {
+  if (!(await persistChannelDraftOrAbort(channel))) {
+    return
+  }
+
+  try {
+    const pairCode = await createChannelPairCodeCompat(channel)
+    const snapshot = await refreshPairingSnapshot(channel)
+    pairDialogChannel.value = channel
+    pairDialogExpectedCode.value = pairCode.code
+    pairDialogInitialPrincipalIds.value = getSnapshotPrincipalIds(channel, snapshot)
+    pairDialogCode.value = pairCode.code
+    pairDialogExpiresAt.value = pairCode.expiresAt
+    pairDialogCancelling.value = false
+    pairDialogOpen.value = true
+    startPairDialogPolling()
+  } catch (error) {
+    toast({
+      title: t('common.error.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive'
+    })
+  }
+}
+
+const cancelPairDialog = async () => {
+  if (!pairDialogChannel.value) {
+    return
+  }
+
+  stopPairDialogPolling()
+  pairDialogOpen.value = false
+  pairDialogCancelling.value = true
+  try {
+    await clearChannelPairCodeCompat(pairDialogChannel.value)
+  } catch (error) {
+    toast({
+      title: t('common.error.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive'
+    })
+  } finally {
+    pairDialogCancelling.value = false
+    closePairDialogState()
+  }
+}
+
+const loadBindingsDialogState = async (channel: RemoteChannel) => {
+  bindingsLoading.value = true
+  try {
+    const [nextBindings, nextPrincipals] = await Promise.all([
+      getChannelBindingsCompat(channel),
+      isPairableChannel(channel)
+        ? getChannelPairingSnapshotCompat(channel).then((snapshot) =>
+            getSnapshotPrincipalIds(channel, snapshot)
+          )
+        : Promise.resolve([] as string[])
+    ])
+    bindings.value = nextBindings
+    authorizedPrincipals.value = nextPrincipals
+  } finally {
+    bindingsLoading.value = false
+  }
+}
+
+const openBindingsDialog = async (channel: RemoteChannel) => {
+  if (!(await persistChannelDraftOrAbort(channel))) {
+    return
+  }
+
+  bindingsDialogChannel.value = channel
+  bindingsDialogOpen.value = true
+  try {
+    await loadBindingsDialogState(channel)
+  } catch (error) {
+    toast({
+      title: t('common.error.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive'
+    })
+  }
+}
+
+const removeBinding = async (endpointKey: string) => {
+  if (!bindingsDialogChannel.value) {
+    return
+  }
+
+  bindingRemovingKey.value = endpointKey
+  try {
+    await removeChannelBindingCompat(bindingsDialogChannel.value, endpointKey)
+    await Promise.all([loadBindingsDialogState(bindingsDialogChannel.value), refreshStatus()])
+  } catch (error) {
+    toast({
+      title: t('common.error.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive'
+    })
+  } finally {
+    bindingRemovingKey.value = null
+  }
+}
+
+const removePrincipal = async (principalId: string) => {
+  if (!isPairableChannel(bindingsDialogChannel.value)) {
+    return
+  }
+
+  principalRemovingId.value = principalId
+  try {
+    await removeChannelPrincipalCompat(bindingsDialogChannel.value, principalId)
+    await Promise.all([loadBindingsDialogState(bindingsDialogChannel.value), refreshStatus()])
+  } catch (error) {
+    toast({
+      title: t('common.error.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive'
+    })
+  } finally {
+    principalRemovingId.value = null
+  }
+}
+
+const formatTimestamp = (value: number) => new Date(value).toLocaleString()
+
+const formatStatusLine = (value: RemoteChannelStatus) =>
+  t(`settings.remote.status.states.${value.state}`)
+
+const statusDotClass = (state: RemoteRuntimeState, dotOnly = false) => {
+  if (state === 'running') {
+    return dotOnly ? 'bg-emerald-500' : 'bg-emerald-500/10 text-emerald-600'
+  }
+  if (state === 'starting' || state === 'backoff') {
+    return dotOnly ? 'bg-amber-500' : 'bg-amber-500/10 text-amber-700'
+  }
+  if (state === 'error') {
+    return dotOnly ? 'bg-red-500' : 'bg-red-500/10 text-red-600'
+  }
+  return dotOnly ? 'bg-muted-foreground/50' : 'bg-muted text-muted-foreground'
+}
+
+const selectedFeishuSetupUrls = computed(() => {
+  const brand = feishuSettings.value?.brand === 'lark' ? 'lark' : 'feishu'
+  const baseUrl = brand === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
+  const appId = feishuSettings.value?.appId?.trim() ?? ''
+  return {
+    tutorial: `${baseUrl}/document/develop-an-echo-bot/introduction`,
+    developerConsole: `${baseUrl}/app`,
+    botChat:
+      brand === 'lark'
+        ? `https://applink.larksuite.com/client/bot/open?appId=${encodeURIComponent(appId)}`
+        : `https://applink.feishu.cn/client/bot/open?appId=${encodeURIComponent(appId)}`
+  }
+})
+
+const openExternalUrl = async (url: string) => {
+  await openRuntimeExternal(url)
+}
+
+const openFeishuSetupGuide = async () => {
+  await openExternalUrl(selectedFeishuSetupUrls.value.tutorial)
+}
+
+const openFeishuDeveloperConsole = async () => {
+  await openExternalUrl(selectedFeishuSetupUrls.value.developerConsole)
+}
+
+const openFeishuBotChat = async () => {
+  if (!feishuSettings.value?.appId?.trim()) {
+    toast({
+      title: t('settings.remote.feishu.openBotChatMissingAppIdTitle'),
+      description: t('settings.remote.feishu.openBotChatMissingAppIdDescription'),
+      variant: 'destructive'
+    })
+    return
+  }
+
+  await openExternalUrl(selectedFeishuSetupUrls.value.botChat)
+}
+
+const bindingKindClass = (kind: RemoteBindingSummary['kind']) => {
+  if (kind === 'dm') {
+    return 'bg-emerald-500/10 text-emerald-700'
+  }
+  if (kind === 'topic') {
+    return 'bg-blue-500/10 text-blue-700'
+  }
+  return 'bg-amber-500/10 text-amber-700'
+}
+
+const formatOverviewLine = (channel: RemoteChannel) => {
+  if (channel === 'telegram') {
+    const status = channelStatus(channel)
+    if (!status) {
+      return ''
+    }
+    return t('settings.remote.overview.telegram', {
+      bindingCount: status.bindingCount,
+      pairedCount: status.allowedUserCount
+    })
+  }
+
+  if (channel === 'qqbot') {
+    const status = channelStatus(channel)
+    if (!status) {
+      return ''
+    }
+    return t('settings.remote.overview.qqbot', {
+      bindingCount: status.bindingCount,
+      pairedCount: status.pairedUserCount
+    })
+  }
+
+  if (channel === 'discord') {
+    const status = channelStatus(channel)
+    if (!status) {
+      return ''
+    }
+    return t('settings.remote.overview.discord', {
+      bindingCount: status.bindingCount,
+      pairedCount: status.pairedChannelCount
+    })
+  }
+
+  if (channel === 'weixin-ilink') {
+    const status = channelStatus(channel)
+    if (!status) {
+      return ''
+    }
+    return t('settings.remote.overview.weixinIlink', {
+      bindingCount: status.bindingCount,
+      accountCount: status.accountCount,
+      connectedCount: status.connectedAccountCount
+    })
+  }
+
+  const status = channelStatus('feishu')
+  if (!status) {
+    return ''
+  }
+
+  return t('settings.remote.overview.feishu', {
+    bindingCount: status.bindingCount,
+    pairedCount: status.pairedUserCount
+  })
+}
+
+watch(() => props.channel, syncActiveChannelFromProps)
+
+onMounted(() => {
+  remoteSettingsUnmounted = false
+  syncActiveChannelFromProps()
+  void loadState()
+  statusRefreshTimer = setInterval(() => {
+    void refreshStatus()
+  }, 2_000)
+})
+
+onUnmounted(() => {
+  remoteSettingsUnmounted = true
+  if (statusRefreshTimer) {
+    clearInterval(statusRefreshTimer)
+    statusRefreshTimer = null
+  }
+  stopPairDialogPolling()
+  void cancelFeishuInstall(false)
+  void cancelFeishuScanAuth(false)
+  closeWeixinIlinkLoginDialog()
+})
+</script>

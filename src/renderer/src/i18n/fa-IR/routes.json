@@ -10,5 +10,18 @@
   "settings-shortcut": "میان‌برها",
   "settings-display": "تنظیمات نمایش",
   "settings-knowledge-base": "پایگاه دانش",
-  "settings-prompt": "مدیریت پرامپت"
+  "settings-prompt": "مدیریت پرامپت‌ها",
+  "settings-mcp-market": "بازار MCP",
+  "settings-acp": "نماینده ACP",
+  "settings-skills": "Skills",
+  "settings-notifications-hooks": "هوک‌ها",
+  "settings-scheduled-tasks": "وظایف زمان‌بندی‌شده",
+  "settings-dashboard": "داشبورد",
+  "settings-environments": "محیط‌ها",
+  "settings-remote": "کنترل از راه دور",
+  "settings-deepchat-agents": "ایجنت‌های DeepChat",
+  "settings-plugins": "افزونه‌ها",
+  "settings-overview": "نمای کلی تنظیمات",
+  "settings-memory": "حافظه",
+  "plugins": "Plugins"
 }

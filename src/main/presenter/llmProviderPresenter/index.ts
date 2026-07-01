@@ -1,167 +1,185 @@
+import logger from '@shared/logger'
 import {
   ILlmProviderPresenter,
   LLM_PROVIDER,
   LLMResponse,
-  MCPToolCall,
   MODEL_META,
+  ModelConfig,
   OllamaModel,
   ChatMessage,
-  LLMAgentEvent,
-  KeyStatus
+  KeyStatus,
+  LLM_EMBEDDING_ATTRS,
+  StandaloneImageGenerationResult,
+  StandaloneVideoGenerationResult,
+  ModelScopeMcpSyncOptions,
+  ModelScopeMcpSyncResult,
+  IConfigPresenter,
+  ISQLitePresenter,
+  AcpConfigState,
+  RateLimitQueueSnapshot,
+  AcpWorkdirInfo,
+  AcpDebugRequest,
+  AcpDebugRunResult
 } from '@shared/presenter'
-import { BaseLLMProvider } from './baseProvider'
-import { OpenAIProvider } from './providers/openAIProvider'
-import { DeepseekProvider } from './providers/deepseekProvider'
-import { SiliconcloudProvider } from './providers/siliconcloudProvider'
-import { eventBus, SendTarget } from '@/eventbus'
-import { OpenAICompatibleProvider } from './providers/openAICompatibleProvider'
-import { PPIOProvider } from './providers/ppioProvider'
-import { OLLAMA_EVENTS } from '@/events'
-import { ConfigPresenter } from '../configPresenter'
-import { GeminiProvider } from './providers/geminiProvider'
-import { GithubProvider } from './providers/githubProvider'
-import { GithubCopilotProvider } from './providers/githubCopilotProvider'
-import { OllamaProvider } from './providers/ollamaProvider'
-import { AnthropicProvider } from './providers/anthropicProvider'
-import { DoubaoProvider } from './providers/doubaoProvider'
+import { ApiEndpointType, ModelType } from '@shared/model'
+import {
+  normalizeImageGenerationOptions,
+  type ImageGenerationOptions
+} from '@shared/imageGenerationSettings'
+import {
+  normalizeVideoGenerationOptions,
+  type VideoGenerationOptions
+} from '@shared/videoGenerationSettings'
+import { ProviderChange, ProviderBatchUpdate } from '@shared/provider-operations'
+import { isProviderDbBackedProvider } from '@shared/providerDbCatalog'
+import { eventBus } from '@/eventbus'
+import { CONFIG_EVENTS, PROVIDER_DB_EVENTS } from '@/events'
+import { BaseLLMProvider, isAudioTranscriptionNotSupportedError } from './baseProvider'
+import { ProviderConfig, StreamState } from './types'
+import { RateLimitManager } from './managers/rateLimitManager'
+import { ProviderInstanceManager } from './managers/providerInstanceManager'
+import { ModelManager } from './managers/modelManager'
+import { OllamaManager } from './managers/ollamaManager'
+import { EmbeddingManager } from './managers/embeddingManager'
+import { ModelScopeSyncManager } from './managers/modelScopeSyncManager'
+import type { OllamaProvider } from './providers/ollamaProvider'
 import { ShowResponse } from 'ollama'
-import { CONFIG_EVENTS } from '@/events'
-import { GrokProvider } from './providers/grokProvider'
-import { presenter } from '@/presenter'
-import { ZhipuProvider } from './providers/zhipuProvider'
-import { LMStudioProvider } from './providers/lmstudioProvider'
-import { OpenAIResponsesProvider } from './providers/openAIResponsesProvider'
-import { OpenRouterProvider } from './providers/openRouterProvider'
-// 流的状态
-interface StreamState {
-  isGenerating: boolean
-  providerId: string
-  modelId: string
-  abortController: AbortController
-  provider: BaseLLMProvider
+import { AcpSessionPersistence } from './acp'
+import { AcpProvider } from './providers/acpProvider'
+import type { ProviderMcpRuntimePort } from './runtimePorts'
+
+const createAbortError = (): Error => {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException('Aborted', 'AbortError')
+  }
+
+  const error = new Error('Aborted')
+  error.name = 'AbortError'
+  return error
 }
 
-// 配置项
-interface ProviderConfig {
-  maxConcurrentStreams: number
+const createAbortPromise = (
+  signal: AbortSignal | undefined,
+  onAbort?: () => void
+): { promise?: Promise<never>; cleanup: () => void } => {
+  if (!signal) {
+    return { cleanup: () => undefined }
+  }
+
+  let abortHandler: (() => void) | null = null
+  const promise = new Promise<never>((_, reject) => {
+    abortHandler = () => {
+      onAbort?.()
+      reject(createAbortError())
+    }
+    signal.addEventListener('abort', abortHandler, { once: true })
+  })
+
+  return {
+    promise,
+    cleanup: () => {
+      if (abortHandler) {
+        signal.removeEventListener('abort', abortHandler)
+      }
+    }
+  }
 }
+
+const AUDIO_TRANSCRIPTION_PROMPT = [
+  'Transcribe the provided audio.',
+  'Return only the transcription text of the audio content.',
+  'Do not translate, summarize, explain, add speaker labels, or use markdown.',
+  'If there is no discernible speech, return an empty string.',
+  '请只返回音频中的转写文本，不要翻译、总结、解释、添加说话人标签或 Markdown。',
+  '如果没有可辨识的语音，请返回空字符串。'
+].join(' ')
 
 export class LLMProviderPresenter implements ILlmProviderPresenter {
-  private providers: Map<string, LLM_PROVIDER> = new Map()
-  private providerInstances: Map<string, BaseLLMProvider> = new Map()
   private currentProviderId: string | null = null
-  // 通过 eventId 管理所有的 stream
-  private activeStreams: Map<string, StreamState> = new Map()
-  // 配置
-  private config: ProviderConfig = {
+  private readonly activeStreams: Map<string, StreamState> = new Map()
+  private readonly modelRefreshPromises: Map<string, Promise<void>> = new Map()
+  private readonly configPresenter: IConfigPresenter
+  private readonly config: ProviderConfig = {
     maxConcurrentStreams: 10
   }
-  private configPresenter: ConfigPresenter
+  private readonly rateLimitManager: RateLimitManager
+  private readonly providerInstanceManager: ProviderInstanceManager
+  private readonly modelManager: ModelManager
+  private readonly ollamaManager: OllamaManager
+  private readonly embeddingManager: EmbeddingManager
+  private readonly modelScopeSyncManager: ModelScopeSyncManager
+  private readonly acpSessionPersistence: AcpSessionPersistence
 
-  constructor(configPresenter: ConfigPresenter) {
+  constructor(
+    configPresenter: IConfigPresenter,
+    sqlitePresenter: ISQLitePresenter,
+    mcpRuntime?: ProviderMcpRuntimePort
+  ) {
     this.configPresenter = configPresenter
-    this.init()
-    // 监听代理更新事件
+    this.rateLimitManager = new RateLimitManager(configPresenter)
+    this.acpSessionPersistence = new AcpSessionPersistence(sqlitePresenter)
+    this.providerInstanceManager = new ProviderInstanceManager({
+      configPresenter,
+      activeStreams: this.activeStreams,
+      rateLimitManager: this.rateLimitManager,
+      getCurrentProviderId: () => this.currentProviderId,
+      setCurrentProviderId: (providerId) => {
+        this.currentProviderId = providerId
+      },
+      acpSessionPersistence: this.acpSessionPersistence,
+      mcpRuntime
+    })
+    this.modelManager = new ModelManager({
+      configPresenter,
+      getProviderInstance: this.getProviderInstance.bind(this)
+    })
+    this.ollamaManager = new OllamaManager({
+      getProviderInstance: this.getProviderInstance.bind(this)
+    })
+    this.embeddingManager = new EmbeddingManager({
+      getProviderInstance: this.getProviderInstance.bind(this)
+    })
+    this.modelScopeSyncManager = new ModelScopeSyncManager({
+      configPresenter
+    })
+
+    this.rateLimitManager.initializeProviderRateLimitConfigs()
+    this.providerInstanceManager.init()
+
     eventBus.on(CONFIG_EVENTS.PROXY_RESOLVED, () => {
-      // 遍历所有活跃的 provider 实例，调用 onProxyResolved
-      for (const provider of this.providerInstances.values()) {
-        provider.onProxyResolved()
-      }
+      this.providerInstanceManager.handleProxyResolved()
+    })
+
+    eventBus.on(CONFIG_EVENTS.PROVIDER_ATOMIC_UPDATE, (change: ProviderChange) => {
+      this.providerInstanceManager.handleProviderAtomicUpdate(change)
+    })
+
+    eventBus.on(CONFIG_EVENTS.PROVIDER_BATCH_UPDATE, (batchUpdate: ProviderBatchUpdate) => {
+      this.providerInstanceManager.handleProviderBatchUpdate(batchUpdate)
+    })
+
+    eventBus.on(PROVIDER_DB_EVENTS.UPDATED, () => {
+      this.refreshEnabledProviderDbBackedModelsInBackground('provider-db-updated')
     })
   }
 
-  private init() {
-    const providers = this.configPresenter.getProviders()
-    for (const provider of providers) {
-      this.providers.set(provider.id, provider)
-      if (provider.enable) {
-        try {
-          console.log('init provider', provider.id, provider.apiType)
-          const instance = this.createProviderInstance(provider)
-          if (instance) {
-            this.providerInstances.set(provider.id, instance)
-          }
-        } catch (error) {
-          console.error(`Failed to initialize provider ${provider.id}:`, error)
-        }
-      }
-    }
-  }
-
-  private createProviderInstance(provider: LLM_PROVIDER): BaseLLMProvider | undefined {
-    try {
-      // 特殊处理 grok
-      if (provider.apiType === 'grok' || provider.id === 'grok') {
-        console.log('match grok')
-        return new GrokProvider(provider, this.configPresenter)
-      }
-      // 特殊处理 openrouter
-      if (provider.id === 'openrouter') {
-        return new OpenRouterProvider(provider, this.configPresenter)
-      }
-
-      if (provider.id === 'ppio') {
-        return new PPIOProvider(provider, this.configPresenter)
-      }
-      if(provider.id === 'deepseek') {
-        return new DeepseekProvider(provider, this.configPresenter)
-      }
-      switch (provider.apiType) {
-        case 'minimax':
-          return new OpenAIProvider(provider, this.configPresenter)
-        case 'deepseek':
-          return new DeepseekProvider(provider, this.configPresenter)
-        case 'silicon':
-        case 'siliconcloud':
-          return new SiliconcloudProvider(provider, this.configPresenter)
-        case 'ppio':
-          return new PPIOProvider(provider, this.configPresenter)
-        case 'gemini':
-          return new GeminiProvider(provider, this.configPresenter)
-        case 'zhipu':
-          return new ZhipuProvider(provider, this.configPresenter)
-        case 'github':
-          return new GithubProvider(provider, this.configPresenter)
-        case 'github-copilot':
-          return new GithubCopilotProvider(provider, this.configPresenter)
-        case 'ollama':
-          return new OllamaProvider(provider, this.configPresenter)
-        case 'anthropic':
-          return new AnthropicProvider(provider, this.configPresenter)
-        case 'doubao':
-          return new DoubaoProvider(provider, this.configPresenter)
-        case 'openai':
-          return new OpenAIProvider(provider, this.configPresenter)
-        case 'openai-compatible':
-          return new OpenAICompatibleProvider(provider, this.configPresenter)
-        case 'openai-responses':
-          return new OpenAIResponsesProvider(provider, this.configPresenter)
-        case 'lmstudio':
-          return new LMStudioProvider(provider, this.configPresenter)
-        default:
-          console.warn(`Unknown provider type: ${provider.apiType}`)
-          return undefined
-      }
-    } catch (error) {
-      console.error(`Failed to create provider instance for ${provider.id}:`, error)
-      return undefined
-    }
-  }
-
   getProviders(): LLM_PROVIDER[] {
-    return Array.from(this.providers.values())
+    return this.providerInstanceManager.getProviders()
   }
 
   getCurrentProvider(): LLM_PROVIDER | null {
-    return this.currentProviderId ? this.providers.get(this.currentProviderId) || null : null
+    if (!this.currentProviderId) {
+      return null
+    }
+    try {
+      return this.providerInstanceManager.getProviderById(this.currentProviderId)
+    } catch {
+      return null
+    }
   }
 
   getProviderById(id: string): LLM_PROVIDER {
-    const provider = this.providers.get(id)
-    if (!provider) {
-      throw new Error(`Provider ${id} not found`)
-    }
-    return provider
+    return this.providerInstanceManager.getProviderById(id)
   }
 
   async setCurrentProvider(providerId: string): Promise<void> {
@@ -179,67 +197,88 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
   }
 
   setProviders(providers: LLM_PROVIDER[]): void {
-    // 如果有正在生成的流，先停止它们
     this.stopAllStreams()
-
-    this.providers.clear()
-    providers.forEach((provider) => {
-      this.providers.set(provider.id, provider)
-    })
-    this.providerInstances.clear()
-    const enabledProviders = Array.from(this.providers.values()).filter(
-      (provider) => provider.enable
-    )
-    for (const provider of enabledProviders) {
-      this.getProviderInstance(provider.id)
-    }
-
-    // 如果当前 provider 不在新的列表中，清除当前 provider
-    if (this.currentProviderId && !providers.find((p) => p.id === this.currentProviderId)) {
-      this.currentProviderId = null
-    }
+    this.providerInstanceManager.setProviders(providers)
   }
 
-  private getProviderInstance(providerId: string): BaseLLMProvider {
-    let instance = this.providerInstances.get(providerId)
-    if (!instance) {
-      const provider = this.getProviderById(providerId)
-      instance = this.createProviderInstance(provider)
-      if (!instance) {
-        throw new Error(`Failed to create provider instance for ${providerId}`)
-      }
-      this.providerInstances.set(providerId, instance)
+  public getProviderInstance(providerId: string): BaseLLMProvider {
+    return this.providerInstanceManager.getProviderInstance(providerId)
+  }
+
+  public getExistingProviderInstance(providerId: string): BaseLLMProvider | undefined {
+    return this.providerInstanceManager.getExistingProviderInstance(providerId)
+  }
+
+  async clearAcpSession(conversationId: string): Promise<void> {
+    const acpProvider = this.getExistingProviderInstance('acp') as
+      | { clearSession?: (conversationId: string) => Promise<void> }
+      | undefined
+    if (acpProvider?.clearSession) {
+      await acpProvider.clearSession(conversationId)
     }
-    return instance
   }
 
   async getModelList(providerId: string): Promise<MODEL_META[]> {
-    const provider = this.getProviderInstance(providerId)
-    let models = await provider.fetchModels()
-    models = models.map((model) => {
-      const config = this.configPresenter.getModelConfig(model.id, providerId)
-      if (config) {
-        model.maxTokens = config.maxTokens
-        model.contextLength = config.contextLength
-        // 如果模型中已经有这些属性则保留，否则使用配置中的值或默认为false
-        model.vision = model.vision !== undefined ? model.vision : config.vision || false
-        model.functionCall =
-          model.functionCall !== undefined ? model.functionCall : config.functionCall || false
-        model.reasoning =
-          model.reasoning !== undefined ? model.reasoning : config.reasoning || false
-      } else {
-        // 确保模型具有这些属性，如果没有配置，默认为false
-        model.vision = model.vision || false
-        model.functionCall = model.functionCall || false
-        model.reasoning = model.reasoning || false
-      }
-      return model
-    })
-    return models
+    return this.modelManager.getModelList(providerId)
   }
 
   async updateModelStatus(providerId: string, modelId: string, enabled: boolean): Promise<void> {
-    this.configPresenter.setModelStatus(providerId, modelId, enabled)
+    await this.modelManager.updateModelStatus(providerId, modelId, enabled)
+  }
+
+  async batchUpdateModelStatus(
+    providerId: string,
+    updates: { modelId: string; enabled: boolean }[]
+  ): Promise<void> {
+    const statusMap: Record<string, boolean> = {}
+    for (const update of updates) {
+      statusMap[update.modelId] = update.enabled
+    }
+    await this.modelManager.batchUpdateModelStatusQuiet(providerId, statusMap)
+  }
+
+  /**
+   * 更新 provider 的速率限制配置
+   */
+  updateProviderRateLimit(providerId: string, enabled: boolean, qpsLimit: number): void {
+    this.rateLimitManager.updateProviderRateLimit(providerId, enabled, qpsLimit)
+  }
+
+  /**
+   * 获取 provider 的速率限制状态
+   */
+  getProviderRateLimitStatus(providerId: string): {
+    config: { enabled: boolean; qpsLimit: number }
+    currentQps: number
+    queueLength: number
+    lastRequestTime: number
+  } {
+    return this.rateLimitManager.getProviderRateLimitStatus(providerId)
+  }
+
+  /**
+   * 获取所有 provider 的速率限制状态
+   */
+  getAllProviderRateLimitStatus(): Record<
+    string,
+    {
+      config: { enabled: boolean; qpsLimit: number }
+      currentQps: number
+      queueLength: number
+      lastRequestTime: number
+    }
+  > {
+    return this.rateLimitManager.getAllProviderRateLimitStatus()
+  }
+
+  async executeWithRateLimit(
+    providerId: string,
+    options?: {
+      signal?: AbortSignal
+      onQueued?: (snapshot: RateLimitQueueSnapshot) => void
+    }
+  ): Promise<void> {
+    await this.rateLimitManager.executeWithRateLimit(providerId, options)
   }
 
   isGenerating(eventId: string): boolean {
@@ -254,7 +293,7 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     const stream = this.activeStreams.get(eventId)
     if (stream) {
       stream.abortController.abort()
-      // Deletion is handled by the consuming loop in threadPresenter upon receiving the 'end' event or abortion signal
+      // Deletion is handled by the consuming loop in sessionPresenter upon receiving the 'end' event or abortion signal
     }
   }
 
@@ -265,595 +304,6 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     await Promise.all(promises)
   }
 
-  private canStartNewStream(): boolean {
-    return this.activeStreams.size < this.config.maxConcurrentStreams
-  }
-
-  async *startStreamCompletion(
-    providerId: string,
-    initialMessages: ChatMessage[],
-    modelId: string,
-    eventId: string,
-    temperature: number = 0.6,
-    maxTokens: number = 4096
-  ): AsyncGenerator<LLMAgentEvent, void, unknown> {
-    console.log('Starting agent loop for event:', eventId, 'with model:', modelId)
-    if (!this.canStartNewStream()) {
-      // Instead of throwing, yield an error event
-      yield { type: 'error', data: { eventId, error: '已达到最大并发流数量限制' } }
-      return
-      // throw new Error('已达到最大并发流数量限制')
-    }
-
-    const provider = this.getProviderInstance(providerId)
-    const abortController = new AbortController()
-    const modelConfig = this.configPresenter.getModelConfig(modelId, providerId)
-
-    this.activeStreams.set(eventId, {
-      isGenerating: true,
-      providerId,
-      modelId,
-      abortController,
-      provider
-    })
-
-    // Agent Loop Variables
-    const conversationMessages: ChatMessage[] = [...initialMessages]
-    let needContinueConversation = true
-    let toolCallCount = 0
-    const MAX_TOOL_CALLS = BaseLLMProvider.getMaxToolCalls()
-    const totalUsage: {
-      prompt_tokens: number
-      completion_tokens: number
-      total_tokens: number
-      context_length: number
-    } = {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      context_length: modelConfig?.contextLength || 0
-    }
-
-    try {
-      // --- Agent Loop ---
-      while (needContinueConversation) {
-        if (abortController.signal.aborted) {
-          console.log('Agent loop aborted for event:', eventId)
-          break
-        }
-
-        if (toolCallCount >= MAX_TOOL_CALLS) {
-          console.warn('Maximum tool call limit reached for event:', eventId)
-          yield {
-            type: 'response',
-            data: {
-              eventId,
-              maximum_tool_calls_reached: true
-            }
-          }
-
-          break
-        }
-
-        needContinueConversation = false
-
-        // Prepare for LLM call
-        let currentContent = ''
-        // let currentReasoning = ''
-        const currentToolCalls: Array<{
-          id: string
-          name: string
-          arguments: string
-        }> = []
-        const currentToolChunks: Record<string, { name: string; arguments_chunk: string }> = {}
-
-        try {
-          console.log(`Loop iteration ${toolCallCount + 1} for event ${eventId}`)
-          const mcpTools = await presenter.mcpPresenter.getAllToolDefinitions()
-          // Call the provider's core stream method, expecting LLMCoreStreamEvent
-          const stream = provider.coreStream(
-            conversationMessages,
-            modelId,
-            modelConfig,
-            temperature,
-            maxTokens,
-            mcpTools
-          )
-
-          // Process the standardized stream events
-          for await (const chunk of stream) {
-            if (abortController.signal.aborted) {
-              break
-            }
-            // console.log('presenter chunk', JSON.stringify(chunk), currentContent)
-
-            // --- Event Handling (using LLMCoreStreamEvent structure) ---
-            switch (chunk.type) {
-              case 'text':
-                if (chunk.content) {
-                  currentContent += chunk.content
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      content: chunk.content
-                    }
-                  }
-                }
-                break
-              case 'reasoning':
-                if (chunk.reasoning_content) {
-                  // currentReasoning += chunk.reasoning_content
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      reasoning_content: chunk.reasoning_content
-                    }
-                  }
-                }
-                break
-              case 'tool_call_start':
-                if (chunk.tool_call_id && chunk.tool_call_name) {
-                  currentToolChunks[chunk.tool_call_id] = {
-                    name: chunk.tool_call_name,
-                    arguments_chunk: ''
-                  }
-                  // Immediately send the start event to indicate the tool call has begun
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      tool_call: 'start',
-                      tool_call_id: chunk.tool_call_id,
-                      tool_call_name: chunk.tool_call_name,
-                      tool_call_params: '' // Initial parameters are empty
-                    }
-                  }
-                }
-                break
-              case 'tool_call_chunk':
-                if (
-                  chunk.tool_call_id &&
-                  currentToolChunks[chunk.tool_call_id] &&
-                  chunk.tool_call_arguments_chunk
-                ) {
-                  currentToolChunks[chunk.tool_call_id].arguments_chunk +=
-                    chunk.tool_call_arguments_chunk
-
-                  // Send update event to update parameter content in real-time
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      tool_call: 'update',
-                      tool_call_id: chunk.tool_call_id,
-                      tool_call_name: currentToolChunks[chunk.tool_call_id].name,
-                      tool_call_params: currentToolChunks[chunk.tool_call_id].arguments_chunk
-                    }
-                  }
-                }
-                break
-              case 'tool_call_end':
-                if (chunk.tool_call_id && currentToolChunks[chunk.tool_call_id]) {
-                  const completeArgs =
-                    chunk.tool_call_arguments_complete ??
-                    currentToolChunks[chunk.tool_call_id].arguments_chunk
-                  currentToolCalls.push({
-                    id: chunk.tool_call_id,
-                    name: currentToolChunks[chunk.tool_call_id].name,
-                    arguments: completeArgs
-                  })
-
-                  // Send final update event to ensure parameter completeness
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      tool_call: 'update',
-                      tool_call_id: chunk.tool_call_id,
-                      tool_call_name: currentToolChunks[chunk.tool_call_id].name,
-                      tool_call_params: completeArgs
-                    }
-                  }
-
-                  delete currentToolChunks[chunk.tool_call_id]
-                }
-                break
-              case 'usage':
-                if (chunk.usage) {
-                  // console.log('usage', chunk.usage, totalUsage)
-                  totalUsage.prompt_tokens += chunk.usage.prompt_tokens
-                  totalUsage.completion_tokens += chunk.usage.completion_tokens
-                  totalUsage.total_tokens += chunk.usage.total_tokens
-                  totalUsage.context_length = modelConfig.contextLength
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      totalUsage: { ...totalUsage } // Yield accumulated usage
-                    }
-                  }
-                }
-                break
-              case 'image_data':
-                if (chunk.image_data) {
-                  yield {
-                    type: 'response',
-                    data: {
-                      eventId,
-                      image_data: chunk.image_data
-                    }
-                  }
-
-                  currentContent += `\n[Image data received: ${chunk.image_data.mimeType}]\n`
-                }
-                break
-              case 'error':
-                console.error(`Provider stream error for event ${eventId}:`, chunk.error_message)
-                yield {
-                  type: 'error',
-                  data: {
-                    eventId,
-                    error: chunk.error_message || 'Provider stream error'
-                  }
-                }
-
-                needContinueConversation = false
-                break // Break inner loop on provider error
-              case 'stop':
-                console.log(
-                  `Provider stream stopped for event ${eventId}. Reason: ${chunk.stop_reason}`
-                )
-                if (chunk.stop_reason === 'tool_use') {
-                  // Consolidate any remaining tool call chunks
-                  for (const id in currentToolChunks) {
-                    currentToolCalls.push({
-                      id: id,
-                      name: currentToolChunks[id].name,
-                      arguments: currentToolChunks[id].arguments_chunk
-                    })
-                  }
-
-                  if (currentToolCalls.length > 0) {
-                    needContinueConversation = true
-                  } else {
-                    console.warn(
-                      `Stop reason was 'tool_use' but no tool calls were fully parsed for event ${eventId}.`
-                    )
-                    needContinueConversation = false // Don't continue if no tools parsed
-                  }
-                } else {
-                  needContinueConversation = false
-                }
-                // Stop event itself doesn't need to be yielded here, handled by loop logic
-                break
-            }
-          } // End of inner loop (for await...of stream)
-
-          if (abortController.signal.aborted) break // Break outer loop if aborted
-
-          // --- Post-Stream Processing ---
-
-          // 1. Add Assistant Message
-          const assistantMessage: ChatMessage = {
-            role: 'assistant',
-            content: currentContent
-          }
-          // Only add if there's content or tool calls are expected
-          if (currentContent || (needContinueConversation && currentToolCalls.length > 0)) {
-            conversationMessages.push(assistantMessage)
-          }
-
-          // 2. Execute Tool Calls if needed
-          if (needContinueConversation && currentToolCalls.length > 0) {
-            for (const toolCall of currentToolCalls) {
-              if (abortController.signal.aborted) break // Check before each tool call
-
-              if (toolCallCount >= MAX_TOOL_CALLS) {
-                console.warn('Max tool calls reached during execution phase for event:', eventId)
-                yield {
-                  type: 'response',
-                  data: {
-                    eventId,
-                    maximum_tool_calls_reached: true,
-                    tool_call_id: toolCall.id,
-                    tool_call_name: toolCall.name
-                  }
-                }
-
-                needContinueConversation = false
-                break
-              }
-
-              toolCallCount++
-
-              // Find the tool definition to get server info
-              const toolDef = (await presenter.mcpPresenter.getAllToolDefinitions()).find(
-                (t) => t.function.name === toolCall.name
-              )
-
-              if (!toolDef) {
-                console.error(`Tool definition not found for ${toolCall.name}. Skipping execution.`)
-                const errorMsg = `Tool definition for ${toolCall.name} not found.`
-                yield {
-                  type: 'response',
-                  data: {
-                    eventId,
-                    tool_call: 'error',
-                    tool_call_id: toolCall.id,
-                    tool_call_name: toolCall.name,
-                    tool_call_response: errorMsg
-                  }
-                }
-
-                // Add error message to conversation history for the LLM
-                conversationMessages.push({
-                  role: 'user', // or 'tool' with error content? Let's use user for now.
-                  content: `Error: ${errorMsg}`
-                })
-                continue // Skip to next tool call
-              }
-
-              // Prepare MCPToolCall object for callTool
-              const mcpToolInput: MCPToolCall = {
-                id: toolCall.id,
-                type: 'function',
-                function: {
-                  name: toolCall.name,
-                  arguments: toolCall.arguments
-                },
-                server: toolDef.server
-              }
-
-              // Yield tool start event
-              yield {
-                type: 'response',
-                data: {
-                  eventId,
-                  tool_call: 'running',
-                  tool_call_id: toolCall.id,
-                  tool_call_name: toolCall.name,
-                  tool_call_params: toolCall.arguments,
-                  tool_call_server_name: toolDef.server.name,
-                  tool_call_server_icons: toolDef.server.icons,
-                  tool_call_server_description: toolDef.server.description
-                }
-              }
-
-              try {
-                // Execute the tool via McpPresenter
-                const toolResponse = await presenter.mcpPresenter.callTool(mcpToolInput)
-
-                if (abortController.signal.aborted) break // Check after tool call returns
-
-                // Add tool call and response to conversation history for the next LLM iteration
-                const supportsFunctionCall = modelConfig?.functionCall || false
-
-                if (supportsFunctionCall) {
-                  // Add original tool call message from assistant
-                  const lastAssistantMsg = conversationMessages.findLast(
-                    (m) => m.role === 'assistant'
-                  )
-                  if (lastAssistantMsg) {
-                    if (!lastAssistantMsg.tool_calls) lastAssistantMsg.tool_calls = []
-                    lastAssistantMsg.tool_calls.push({
-                      function: {
-                        arguments: toolCall.arguments,
-                        name: toolCall.name
-                      },
-                      id: toolCall.id,
-                      type: 'function'
-                    })
-                  } else {
-                    // Should not happen if we added assistant message earlier, but as fallback:
-                    conversationMessages.push({
-                      role: 'assistant',
-                      tool_calls: [
-                        {
-                          function: {
-                            arguments: toolCall.arguments,
-                            name: toolCall.name
-                          },
-                          id: toolCall.id,
-                          type: 'function'
-                        }
-                      ]
-                    })
-                  }
-
-                  // Add tool role message with result
-                  conversationMessages.push({
-                    role: 'tool',
-                    content:
-                      typeof toolResponse.content === 'string'
-                        ? toolResponse.content
-                        : JSON.stringify(toolResponse.content),
-                    tool_call_id: toolCall.id
-                  })
-                } else {
-                  // Non-native function calling: Append call and response differently
-
-                  // 1. Append tool call info to the last assistant message
-                  const lastAssistantMessage = conversationMessages.findLast(
-                    (message) => message.role === 'assistant'
-                  )
-                  if (lastAssistantMessage) {
-                    const toolCallInfo = `\n<function_call>
-                    {
-                      "function_call": ${JSON.stringify(
-                      {
-                        id: toolCall.id,
-                        name: toolCall.name,
-                        arguments: toolCall.arguments // Keep original args here
-                      },
-                      null,
-                      2
-                    )}
-                    }
-                    </function_call>\n`
-
-                    if (typeof lastAssistantMessage.content === 'string') {
-                      lastAssistantMessage.content += toolCallInfo
-                    } else if (Array.isArray(lastAssistantMessage.content)) {
-                      // Find the last text part or add a new one
-                      const lastTextPart = lastAssistantMessage.content.findLast(
-                        (part) => part.type === 'text'
-                      )
-                      if (lastTextPart) {
-                        lastTextPart.text += toolCallInfo
-                      } else {
-                        lastAssistantMessage.content.push({ type: 'text', text: toolCallInfo })
-                      }
-                    }
-                  }
-
-                  // 2. Create a user message containing the tool response
-                  const toolResponseContent =
-                    '以下是刚刚执行的工具调用响应，请根据响应内容更新你的回答：\n' +
-                    JSON.stringify({
-                      role: 'tool', // Indicate it's a tool response
-                      content:
-                        typeof toolResponse.content === 'string'
-                          ? toolResponse.content
-                          : JSON.stringify(toolResponse.content), // Stringify complex content
-                      tool_call_id: toolCall.id
-                    })
-
-                  // Append to last user message or create new one
-                  const lastMessage = conversationMessages[conversationMessages.length - 1]
-                  if (lastMessage && lastMessage.role === 'user') {
-                    if (typeof lastMessage.content === 'string') {
-                      lastMessage.content += '\n' + toolResponseContent
-                    } else if (Array.isArray(lastMessage.content)) {
-                      lastMessage.content.push({
-                        type: 'text',
-                        text: toolResponseContent
-                      })
-                    }
-                  } else {
-                    conversationMessages.push({
-                      role: 'user',
-                      content: toolResponseContent
-                    })
-                  }
-                }
-
-                // Yield tool end event with response
-                yield {
-                  type: 'response',
-                  data: {
-                    eventId,
-                    tool_call: 'end',
-                    tool_call_id: toolCall.id,
-                    tool_call_response: toolResponse.content, // Simplified content for UI
-                    tool_call_name: toolCall.name,
-                    tool_call_params: toolCall.arguments, // Original params
-                    tool_call_server_name: toolDef.server.name,
-                    tool_call_server_icons: toolDef.server.icons,
-                    tool_call_server_description: toolDef.server.description,
-                    tool_call_response_raw: toolResponse.rawData // Full raw data
-                  }
-                }
-              } catch (toolError) {
-                if (abortController.signal.aborted) break // Check after tool error
-
-                console.error(
-                  `Tool execution error for ${toolCall.name} (event ${eventId}):`,
-                  toolError
-                )
-                const errorMessage =
-                  toolError instanceof Error ? toolError.message : String(toolError)
-
-                // Yield tool error event
-                yield {
-                  type: 'response', // Still a response event, but indicates tool error
-                  data: {
-                    eventId,
-                    tool_call: 'error',
-                    tool_call_id: toolCall.id,
-                    tool_call_name: toolCall.name,
-                    tool_call_params: toolCall.arguments,
-                    tool_call_response: errorMessage, // Error message as response
-                    tool_call_server_name: toolDef.server.name,
-                    tool_call_server_icons: toolDef.server.icons,
-                    tool_call_server_description: toolDef.server.description
-                  }
-                }
-
-                // Add error message to conversation history for the LLM
-                conversationMessages.push({
-                  role: 'user', // Or 'tool' with error? Use user for now.
-                  content: `Error executing tool ${toolCall.name}: ${errorMessage}`
-                })
-                // Decide if the loop should continue after a tool error.
-                // For now, let's assume it should try to continue if possible.
-                // needContinueConversation might need adjustment based on error type.
-              }
-            } // End of tool execution loop
-
-            if (abortController.signal.aborted) break // Check after tool loop
-
-            if (!needContinueConversation) {
-              // If max tool calls reached or explicit stop, break outer loop
-              break
-            }
-          } else {
-            // No tool calls needed or requested, end the loop
-            needContinueConversation = false
-          }
-        } catch (error) {
-          if (abortController.signal.aborted) {
-            console.log(`Agent loop aborted during inner try-catch for event ${eventId}`)
-            break // Break outer loop if aborted here
-          }
-          console.error(`Agent loop inner error for event ${eventId}:`, error)
-          yield {
-            type: 'error',
-            data: {
-              eventId,
-              error: error instanceof Error ? error.message : String(error)
-            }
-          }
-
-          needContinueConversation = false // Stop loop on inner error
-        }
-      } // --- End of Agent Loop (while) ---
-    } catch (error) {
-      // Catch errors from the generator setup phase (before the loop)
-      if (abortController.signal.aborted) {
-        console.log(`Agent loop aborted during outer try-catch for event ${eventId}`)
-      } else {
-        console.error(`Agent loop outer error for event ${eventId}:`, error)
-        yield {
-          type: 'error',
-          data: {
-            eventId,
-            error: error instanceof Error ? error.message : String(error)
-          }
-        }
-      }
-    } finally {
-      // Finalize stream regardless of how the loop ended (completion, error, abort)
-      const userStop = abortController.signal.aborted
-      if (!userStop) {
-        // Yield final aggregated usage if not aborted
-        yield {
-          type: 'response',
-          data: {
-            eventId,
-            totalUsage
-          }
-        }
-      }
-      // Yield the final END event
-      yield { type: 'end', data: { eventId, userStop } }
-
-      this.activeStreams.delete(eventId)
-      console.log('Agent loop finished for event:', eventId, 'User stopped:', userStop)
-    }
-  }
-
   // 非流式方法
   async generateCompletion(
     providerId: string,
@@ -862,8 +312,8 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     temperature?: number,
     maxTokens?: number
   ): Promise<string> {
-    // 记录输入到大模型的消息内容
-    console.log('generateCompletion', providerId, modelId, temperature, maxTokens, messages)
+    // Record input messages to the large model
+    logger.info('generateCompletion', providerId, modelId, temperature, maxTokens, messages)
     const provider = this.getProviderInstance(providerId)
     const response = await provider.completions(messages, modelId, temperature, maxTokens)
     return response.content
@@ -896,18 +346,284 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     messages: ChatMessage[],
     modelId: string,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    options?: { signal?: AbortSignal; swallowErrors?: boolean }
   ): Promise<string> {
     const provider = this.getProviderInstance(providerId)
     let response = ''
+    const signal = options?.signal
+    const shouldSwallowErrors = options?.swallowErrors !== false
+
+    if (signal?.aborted) {
+      throw createAbortError()
+    }
+
+    const completionPromise = provider.completions(messages, modelId, temperature, maxTokens)
+    const abortPromise =
+      signal &&
+      new Promise<never>((_, reject) => {
+        const onAbort = () => reject(createAbortError())
+        signal.addEventListener('abort', onAbort, { once: true })
+        completionPromise.finally(() => signal.removeEventListener('abort', onAbort))
+      })
+
     try {
-      const llmResponse = await provider.completions(messages, modelId, temperature, maxTokens)
+      const llmResponse = await (abortPromise
+        ? Promise.race([completionPromise, abortPromise])
+        : completionPromise)
       response = llmResponse.content
 
       return response
     } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        throw error
+      }
+
       console.error('Stream error:', error)
+
+      if (!shouldSwallowErrors) {
+        throw error instanceof Error ? error : new Error('Standalone completion failed')
+      }
+
       return ''
+    }
+  }
+
+  async transcribeAudioStandalone(
+    providerId: string,
+    modelId: string,
+    audioBase64: string,
+    mimeType: string,
+    filename?: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<string> {
+    const normalizedAudioBase64 = audioBase64.trim()
+    const normalizedMimeType = mimeType.trim().toLowerCase()
+
+    if (!normalizedAudioBase64) {
+      throw new Error('Audio data is required for transcription')
+    }
+
+    if (!normalizedMimeType.startsWith('audio/')) {
+      throw new Error(`Invalid audio MIME type for transcription: ${mimeType}`)
+    }
+
+    const signal = options?.signal
+    if (signal?.aborted) {
+      throw createAbortError()
+    }
+
+    await this.executeWithRateLimit(providerId, { signal })
+
+    const provider = this.getProviderInstance(providerId)
+    try {
+      return (
+        await provider.transcribeAudio(
+          modelId,
+          normalizedAudioBase64,
+          normalizedMimeType,
+          filename,
+          {
+            signal
+          }
+        )
+      ).trim()
+    } catch (error) {
+      if (!isAudioTranscriptionNotSupportedError(error)) {
+        throw error
+      }
+    }
+
+    const text = await this.generateCompletionStandalone(
+      providerId,
+      [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: AUDIO_TRANSCRIPTION_PROMPT
+            },
+            {
+              type: 'input_audio',
+              input_audio: {
+                data: normalizedAudioBase64,
+                media_type: normalizedMimeType,
+                ...(filename?.trim() ? { filename: filename.trim() } : {})
+              }
+            }
+          ]
+        }
+      ],
+      modelId,
+      0,
+      undefined,
+      { signal, swallowErrors: false }
+    )
+
+    return text.trim()
+  }
+
+  async generateImageStandalone(
+    providerId: string,
+    prompt: string,
+    modelId: string,
+    imageOptions?: ImageGenerationOptions,
+    options?: { signal?: AbortSignal }
+  ): Promise<StandaloneImageGenerationResult> {
+    const normalizedPrompt = prompt.trim()
+    if (!normalizedPrompt) {
+      throw new Error('Image generation prompt is required')
+    }
+
+    const signal = options?.signal
+    if (signal?.aborted) {
+      throw createAbortError()
+    }
+
+    await this.executeWithRateLimit(providerId, { signal })
+
+    const provider = this.getProviderInstance(providerId)
+    const modelConfig = this.configPresenter.getModelConfig(modelId, providerId)
+    const mergedImageOptions = normalizeImageGenerationOptions({
+      ...modelConfig.imageGeneration,
+      ...imageOptions
+    })
+    const resolvedModelConfig: ModelConfig = {
+      ...modelConfig,
+      type: ModelType.ImageGeneration,
+      apiEndpoint: ApiEndpointType.Image,
+      imageGeneration: mergedImageOptions
+    }
+    const stream = provider.coreStream(
+      [{ role: 'user', content: normalizedPrompt }],
+      modelId,
+      resolvedModelConfig,
+      modelConfig.temperature ?? 0.7,
+      modelConfig.maxTokens ?? 1024,
+      []
+    )
+    const images: StandaloneImageGenerationResult['images'] = []
+    const abort = createAbortPromise(signal, () => {
+      void stream.return?.(undefined as never)
+    })
+
+    const collect = async () => {
+      for await (const event of stream) {
+        if (signal?.aborted) {
+          throw createAbortError()
+        }
+
+        if (event.type === 'image_data') {
+          images.push({
+            data: event.image_data.data,
+            mimeType: event.image_data.mimeType
+          })
+        }
+        if (event.type === 'error') {
+          throw new Error(event.error_message)
+        }
+      }
+    }
+
+    try {
+      await (abort.promise ? Promise.race([collect(), abort.promise]) : collect())
+    } finally {
+      abort.cleanup()
+    }
+
+    if (images.length === 0) {
+      throw new Error('Image generation completed without image output')
+    }
+
+    return {
+      providerId,
+      modelId,
+      ...(mergedImageOptions ? { options: mergedImageOptions } : {}),
+      images
+    }
+  }
+
+  async generateVideoStandalone(
+    providerId: string,
+    prompt: string,
+    modelId: string,
+    videoOptions?: VideoGenerationOptions,
+    options?: { signal?: AbortSignal }
+  ): Promise<StandaloneVideoGenerationResult> {
+    const normalizedPrompt = prompt.trim()
+    if (!normalizedPrompt) {
+      throw new Error('Video generation prompt is required')
+    }
+
+    const signal = options?.signal
+    if (signal?.aborted) {
+      throw createAbortError()
+    }
+
+    await this.executeWithRateLimit(providerId, { signal })
+
+    const provider = this.getProviderInstance(providerId)
+    const modelConfig = this.configPresenter.getModelConfig(modelId, providerId)
+    const mergedVideoOptions = normalizeVideoGenerationOptions({
+      ...modelConfig.videoGeneration,
+      ...videoOptions
+    })
+    const resolvedModelConfig: ModelConfig = {
+      ...modelConfig,
+      type: ModelType.VideoGeneration,
+      apiEndpoint: ApiEndpointType.Video,
+      videoGeneration: mergedVideoOptions
+    }
+    const stream = provider.coreStream(
+      [{ role: 'user', content: normalizedPrompt }],
+      modelId,
+      resolvedModelConfig,
+      modelConfig.temperature ?? 0.7,
+      modelConfig.maxTokens ?? 1024,
+      []
+    )
+    const videos: StandaloneVideoGenerationResult['videos'] = []
+    const abort = createAbortPromise(signal, () => {
+      void stream.return?.(undefined as never)
+    })
+
+    const collect = async () => {
+      for await (const event of stream) {
+        if (signal?.aborted) {
+          throw createAbortError()
+        }
+
+        if (
+          event.type === 'image_data' &&
+          event.image_data.mimeType.trim().toLowerCase().startsWith('video/')
+        ) {
+          videos.push({
+            data: event.image_data.data,
+            mimeType: event.image_data.mimeType
+          })
+        }
+        if (event.type === 'error') {
+          throw new Error(event.error_message)
+        }
+      }
+    }
+
+    try {
+      await (abort.promise ? Promise.race([collect(), abort.promise]) : collect())
+    } finally {
+      abort.cleanup()
+    }
+
+    if (videos.length === 0) {
+      throw new Error('Video generation completed without video output')
+    }
+
+    return {
+      providerId,
+      modelId,
+      ...(mergedVideoOptions ? { options: mergedVideoOptions } : {}),
+      videos
     }
   }
 
@@ -920,9 +636,53 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     return this.config.maxConcurrentStreams
   }
 
-  async check(providerId: string): Promise<{ isOk: boolean; errorMsg: string | null }> {
-    const provider = this.getProviderInstance(providerId)
-    return provider.check()
+  async check(
+    providerId: string,
+    modelId?: string
+  ): Promise<{ isOk: boolean; errorMsg: string | null }> {
+    try {
+      const provider = this.getProviderInstance(providerId)
+
+      // 如果提供了modelId，使用completions方法进行测试
+      if (modelId) {
+        try {
+          const testMessage = [{ role: 'user' as const, content: 'hi' }]
+          const response: LLMResponse | null = await Promise.race([
+            provider.completions(testMessage, modelId, 0.1, 10),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 60000))
+          ])
+          // 检查响应是否有效
+          if (
+            response &&
+            (response.content || response.content === '' || response.reasoning_content)
+          ) {
+            return { isOk: true, errorMsg: null }
+          } else {
+            return { isOk: false, errorMsg: 'Model response is invalid' }
+          }
+        } catch (error) {
+          console.error(`Model ${modelId} check failed:`, error)
+          const errorMessage = error instanceof Error ? error.message : String(error)
+          return { isOk: false, errorMsg: `Model test failed: ${errorMessage}` }
+        }
+      } else {
+        // 如果没有提供modelId，使用provider自己的check方法进行基本验证
+        logger.info(
+          `[LLMProviderPresenter] No modelId provided, using provider's own check method for ${providerId}`
+        )
+        try {
+          return await provider.check()
+        } catch (error) {
+          console.error(`Provider ${providerId} check failed:`, error)
+          const errorMessage = error instanceof Error ? error.message : String(error)
+          return { isOk: false, errorMsg: `Provider check failed: ${errorMessage}` }
+        }
+      }
+    } catch (error) {
+      console.error(`Provider ${providerId} check failed:`, error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      return { isOk: false, errorMsg: `Provider check failed: ${errorMessage}` }
+    }
   }
 
   async getKeyStatus(providerId: string): Promise<KeyStatus | null> {
@@ -930,17 +690,79 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     return provider.getKeyStatus()
   }
 
+  private getEnabledProviderIdsUsingProviderDb(): string[] {
+    return this.providerInstanceManager
+      .getProviders()
+      .filter(
+        (provider) =>
+          provider.enable &&
+          isProviderDbBackedProvider(provider.id) &&
+          provider.id !== 'openai-codex'
+      )
+      .map((provider) => provider.id)
+  }
+
+  private async syncProviderDbBeforeRefresh(providerId: string): Promise<void> {
+    if (!isProviderDbBackedProvider(providerId)) {
+      return
+    }
+
+    const result = await this.configPresenter.refreshProviderDb(true)
+    if (result.status === 'error') {
+      throw new Error(result.message || 'Provider DB refresh failed')
+    }
+  }
+
+  private enqueueProviderModelRefresh(providerId: string): Promise<void> {
+    const existingRefresh = this.modelRefreshPromises.get(providerId)
+    if (existingRefresh) {
+      return existingRefresh
+    }
+
+    const refreshPromise = (async () => {
+      const provider = this.getProviderInstance(providerId)
+      await provider.refreshModels()
+    })().finally(() => {
+      if (this.modelRefreshPromises.get(providerId) === refreshPromise) {
+        this.modelRefreshPromises.delete(providerId)
+      }
+    })
+
+    this.modelRefreshPromises.set(providerId, refreshPromise)
+    return refreshPromise
+  }
+
+  private refreshEnabledProviderDbBackedModelsInBackground(reason: string): void {
+    for (const providerId of this.getEnabledProviderIdsUsingProviderDb()) {
+      void this.enqueueProviderModelRefresh(providerId).catch((error) => {
+        console.warn(
+          `[LLMProviderPresenter] Failed to refresh models for provider ${providerId} during ${reason}:`,
+          error
+        )
+      })
+    }
+  }
+
+  async refreshModels(providerId: string): Promise<void> {
+    try {
+      await this.syncProviderDbBeforeRefresh(providerId)
+      await this.enqueueProviderModelRefresh(providerId)
+    } catch (error) {
+      console.error(`Failed to refresh models for provider ${providerId}:`, error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      throw new Error(`Model refresh failed: ${errorMessage}`)
+    }
+  }
+
   async addCustomModel(
     providerId: string,
     model: Omit<MODEL_META, 'providerId' | 'isCustom' | 'group'>
   ): Promise<MODEL_META> {
-    const provider = this.getProviderInstance(providerId)
-    return provider.addCustomModel(model)
+    return this.modelManager.addCustomModel(providerId, model)
   }
 
   async removeCustomModel(providerId: string, modelId: string): Promise<boolean> {
-    const provider = this.getProviderInstance(providerId)
-    return provider.removeCustomModel(modelId)
+    return this.modelManager.removeCustomModel(providerId, modelId)
   }
 
   async updateCustomModel(
@@ -948,15 +770,11 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
     modelId: string,
     updates: Partial<MODEL_META>
   ): Promise<boolean> {
-    const provider = this.getProviderInstance(providerId)
-    const res = provider.updateCustomModel(modelId, updates)
-    this.configPresenter.updateCustomModel(providerId, modelId, updates)
-    return res
+    return this.modelManager.updateCustomModel(providerId, modelId, updates)
   }
 
   async getCustomModels(providerId: string): Promise<MODEL_META[]> {
-    const provider = this.getProviderInstance(providerId)
-    return provider.getCustomModels()
+    return this.modelManager.getCustomModels(providerId)
   }
 
   async summaryTitles(
@@ -969,80 +787,220 @@ export class LLMProviderPresenter implements ILlmProviderPresenter {
   }
 
   // 获取 OllamaProvider 实例
-  getOllamaProviderInstance(): OllamaProvider | null {
-    // 从所有 provider 中找到已经启用的 ollama provider
-    for (const provider of this.providers.values()) {
-      if (provider.id === 'ollama' && provider.enable) {
-        const providerInstance = this.providerInstances.get(provider.id)
-        if (providerInstance instanceof OllamaProvider) {
-          return providerInstance
-        }
-      }
-    }
-    return null
+  getOllamaProviderInstance(providerId: string): OllamaProvider | null {
+    return this.ollamaManager.getOllamaProviderInstance(providerId)
   }
   // ollama api
-  listOllamaModels(): Promise<OllamaModel[]> {
-    const provider = this.getOllamaProviderInstance()
-    if (!provider) {
-      // console.error('Ollama provider not found')
-      return Promise.resolve([])
-    }
-    return provider.listModels()
+  listOllamaModels(providerId: string): Promise<OllamaModel[]> {
+    return this.ollamaManager.listOllamaModels(providerId)
   }
-  showOllamaModelInfo(modelName: string): Promise<ShowResponse> {
-    const provider = this.getOllamaProviderInstance()
-    if (!provider) {
-      throw new Error('Ollama provider not found')
-    }
-    return provider.showModelInfo(modelName)
+  showOllamaModelInfo(providerId: string, modelName: string): Promise<ShowResponse> {
+    return this.ollamaManager.showOllamaModelInfo(providerId, modelName)
   }
-  listOllamaRunningModels(): Promise<OllamaModel[]> {
-    const provider = this.getOllamaProviderInstance()
-    if (!provider) {
-      // console.error('Ollama provider not found')
-      return Promise.resolve([])
-    }
-    return provider.listRunningModels()
+  listOllamaRunningModels(providerId: string): Promise<OllamaModel[]> {
+    return this.ollamaManager.listOllamaRunningModels(providerId)
   }
-  pullOllamaModels(modelName: string): Promise<boolean> {
-    const provider = this.getOllamaProviderInstance()
-    if (!provider) {
-      throw new Error('Ollama provider not found')
-    }
-    return provider.pullModel(modelName, (progress) => {
-      console.log('pullOllamaModels', {
-        eventId: 'pullOllamaModels',
-        modelName: modelName,
-        ...progress
-      })
-      eventBus.sendToRenderer(OLLAMA_EVENTS.PULL_MODEL_PROGRESS, SendTarget.ALL_WINDOWS, {
-        eventId: 'pullOllamaModels',
-        modelName: modelName,
-        ...progress
-      })
-    })
+  pullOllamaModels(providerId: string, modelName: string): Promise<boolean> {
+    return this.ollamaManager.pullOllamaModels(providerId, modelName)
   }
-  deleteOllamaModel(modelName: string): Promise<boolean> {
-    const provider = this.getOllamaProviderInstance()
-    if (!provider) {
-      throw new Error('Ollama provider not found')
-    }
-    return provider.deleteModel(modelName)
-  }
-
   /**
    * 获取文本的 embedding 表示
    * @param providerId 提供商ID
-   * @param texts 文本数组
    * @param modelId 模型ID
+   * @param texts 文本数组
    * @returns embedding 数组
    */
-  async getEmbeddings(providerId: string, texts: string[], modelId: string): Promise<number[][]> {
-    const provider = this.getProviderInstance(providerId)
-    if (!provider.getEmbeddings) {
-      throw new Error('当前 LLM 提供商未实现 embedding 能力')
+  async getEmbeddings(providerId: string, modelId: string, texts: string[]): Promise<number[][]> {
+    return this.embeddingManager.getEmbeddings(providerId, modelId, texts)
+  }
+
+  /**
+   * 获取指定模型的 embedding 维度
+   * @param providerId 提供商ID
+   * @param modelId 模型ID
+   * @returns 模型的 embedding 维度
+   */
+  async getDimensions(
+    providerId: string,
+    modelId: string
+  ): Promise<{ data: LLM_EMBEDDING_ATTRS; errorMsg?: string }> {
+    return this.embeddingManager.getDimensions(providerId, modelId)
+  }
+
+  async syncModelScopeMcpServers(
+    providerId: string,
+    syncOptions?: ModelScopeMcpSyncOptions
+  ): Promise<ModelScopeMcpSyncResult> {
+    return this.modelScopeSyncManager.syncModelScopeMcpServers(providerId, syncOptions)
+  }
+
+  async getAcpWorkdir(conversationId: string, agentId: string): Promise<AcpWorkdirInfo> {
+    const record = await this.acpSessionPersistence.getSessionData(conversationId, agentId)
+    const path = this.acpSessionPersistence.resolveWorkdir(record?.workdir)
+    const isCustom = this.acpSessionPersistence.isWorkdirUsable(record?.workdir)
+    return { path, isCustom }
+  }
+
+  async setAcpWorkdir(
+    conversationId: string,
+    agentId: string,
+    workdir: string | null
+  ): Promise<void> {
+    const provider = this.getAcpProviderInstance()
+    if (provider) {
+      await provider.updateAcpWorkdir(conversationId, agentId, workdir)
+      return
     }
-    return provider.getEmbeddings(texts, modelId)
+
+    const requestedWorkdir = workdir?.trim() ? workdir.trim() : null
+    const trimmed =
+      requestedWorkdir && this.acpSessionPersistence.isWorkdirUsable(requestedWorkdir)
+        ? requestedWorkdir
+        : null
+    if (requestedWorkdir && !trimmed) {
+      console.warn(
+        `[ACP] Ignoring unavailable ACP workdir "${requestedWorkdir}" for conversation ${conversationId} (agent ${agentId}); using default workdir.`
+      )
+    }
+    await this.acpSessionPersistence.updateWorkdir(conversationId, agentId, trimmed)
+  }
+
+  async warmupAcpProcess(agentId: string, workdir?: string): Promise<void> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) return
+    try {
+      await provider.warmupProcess(agentId, workdir)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('shutting down')) {
+        console.warn(
+          `[ACP] Cannot warmup process for agent ${agentId}: process manager is shutting down`
+        )
+        return
+      }
+      throw error
+    }
+  }
+
+  async getAcpProcessModes(
+    agentId: string,
+    workdir?: string
+  ): Promise<
+    | {
+        availableModes?: Array<{ id: string; name: string; description: string }>
+        currentModeId?: string
+      }
+    | undefined
+  > {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      return undefined
+    }
+    return provider.getProcessModes(agentId, workdir)
+  }
+
+  async getAcpProcessConfigOptions(
+    agentId: string,
+    workdir?: string
+  ): Promise<AcpConfigState | null> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      return null
+    }
+    return provider.getProcessConfigOptions(agentId, workdir)
+  }
+
+  async setAcpPreferredProcessMode(agentId: string, workdir: string, modeId: string) {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) return
+
+    await provider.setPreferredProcessMode(agentId, workdir, modeId)
+  }
+
+  async setAcpSessionMode(conversationId: string, modeId: string): Promise<void> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      throw new Error('[ACP] ACP provider not found')
+    }
+    await provider.setSessionMode(conversationId, modeId)
+  }
+
+  async prepareAcpSession(conversationId: string, agentId: string, workdir: string): Promise<void> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      throw new Error('[ACP] ACP provider not found')
+    }
+    await provider.prepareSession(conversationId, agentId, workdir)
+  }
+
+  async getAcpSessionModes(conversationId: string): Promise<{
+    current: string
+    available: Array<{ id: string; name: string; description: string }>
+  } | null> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      return null
+    }
+    return await provider.getSessionModes(conversationId)
+  }
+
+  async getAcpSessionConfigOptions(conversationId: string): Promise<AcpConfigState | null> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      return null
+    }
+    return await provider.getSessionConfigOptions(conversationId)
+  }
+
+  async setAcpSessionConfigOption(
+    conversationId: string,
+    configId: string,
+    value: string | boolean
+  ): Promise<AcpConfigState | null> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      throw new Error('[ACP] ACP provider not found')
+    }
+    return await provider.setSessionConfigOption(conversationId, configId, value)
+  }
+
+  async getAcpSessionCommands(conversationId: string): Promise<
+    Array<{
+      name: string
+      description: string
+      input?: { hint: string } | null
+    }>
+  > {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      return []
+    }
+    return await provider.getSessionCommands(conversationId)
+  }
+
+  async runAcpDebugAction(request: AcpDebugRequest): Promise<AcpDebugRunResult> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      throw new Error('ACP provider unavailable')
+    }
+    return await provider.runDebugAction(request)
+  }
+
+  async resolveAgentPermission(requestId: string, granted: boolean): Promise<void> {
+    const provider = this.getAcpProviderInstance()
+    if (!provider) {
+      throw new Error('ACP provider unavailable')
+    }
+    await provider.resolvePermissionRequest(requestId, granted)
+  }
+
+  private getAcpProviderInstance(): AcpProvider | null {
+    try {
+      const instance = this.getProviderInstance('acp')
+      return instance instanceof AcpProvider ? (instance as AcpProvider) : null
+    } catch (error) {
+      console.warn('[LLMProviderPresenter] ACP provider unavailable:', error)
+      return null
+    }
   }
 }

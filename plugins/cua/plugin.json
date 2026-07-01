@@ -1,0 +1,126 @@
+{
+  "id": "com.deepchat.plugins.cua",
+  "name": "CUA Computer Use Runtime",
+  "version": "1.0.4-beta.3",
+  "publisher": "DeepChat",
+  "engines": {
+    "deepchat": ">=${app.version}",
+    "platforms": ["darwin", "win32", "linux"],
+    "targets": ["darwin/arm64", "darwin/x64", "win32/x64", "win32/arm64", "linux/x64"]
+  },
+  "activationEvents": ["onEnable"],
+  "capabilities": [
+    "runtime.manage",
+    "mcp.register",
+    "skills.register",
+    "settings.contribute",
+    "shell.openExternal",
+    "shell.openPath",
+    "process.execDeclared"
+  ],
+  "source": {
+    "type": "deepchat-official",
+    "url": "${github.release.download}/deepchat-plugin-cua-${app.version}-${target.platform}-${arch}.dcplugin",
+    "publisher": "DeepChat"
+  },
+  "runtime": {
+    "id": "cua-driver",
+    "type": "external-helper",
+    "displayName": "Cua Driver",
+    "detect": [
+      "app-helper:DeepChat Computer Use.app/Contents/MacOS/deepchat-cua-driver",
+      "plugin:runtime/darwin/${arch}/DeepChat Computer Use.app/Contents/MacOS/deepchat-cua-driver",
+      "plugin:runtime/win32/${arch}/cua-driver.exe",
+      "plugin:runtime/linux/${arch}/cua-driver"
+    ],
+    "install": {
+      "mode": "user-confirmed",
+      "provider": "trycua",
+      "strategy": "bundled-plugin-helper",
+      "minVersion": "0.6.7",
+      "guideUrl": "https://cua.ai/docs/cua-driver/guide/getting-started/installation"
+    }
+  },
+  "mcpServers": [
+    {
+      "id": "cua-driver",
+      "displayName": "CUA Driver",
+      "transport": "stdio",
+      "command": "${runtime.cua-driver.command}",
+      "args": ["mcp", "--no-daemon-relaunch"],
+      "env": {
+        "CUA_DRIVER_MCP_MODE": "1",
+        "CUA_DRIVER_RS_MCP_NO_RELAUNCH": "1",
+        "DEEPCHAT_COMPUTER_USE_APP_PATH": "${runtime.cua-driver.helperAppPath}",
+        "DEEPCHAT_COMPUTER_USE_BINARY_PATH": "${runtime.cua-driver.command}"
+      },
+      "autoApprove": []
+    }
+  ],
+  "skills": [
+    {
+      "id": "cua-driver",
+      "path": "skills/cua-driver/SKILL.md",
+      "scope": "agent"
+    }
+  ],
+  "settingsContributions": [
+    {
+      "id": "cua-runtime-settings",
+      "title": "CUA Computer Use Runtime",
+      "placement": "plugins",
+      "entry": "settings/index.html",
+      "preloadTypes": "types/settings-preload.d.ts"
+    }
+  ],
+  "toolPolicies": [
+    {
+      "serverId": "cua-driver",
+      "tools": {
+        "check_permissions": "allow",
+        "list_apps": "allow",
+        "list_windows": "allow",
+        "get_screen_size": "allow",
+        "get_window_state": "allow",
+        "get_accessibility_tree": "allow",
+        "get_cursor_position": "allow",
+        "get_config": "allow",
+        "get_recording_state": "allow",
+        "get_agent_cursor_state": "allow",
+        "check_for_update": "allow",
+        "health_report": "allow",
+        "debug_window_info": "allow",
+        "start_session": "allow",
+        "end_session": "allow",
+        "launch_app": "ask",
+        "kill_app": "ask",
+        "bring_to_front": "ask",
+        "click": "ask",
+        "right_click": "ask",
+        "double_click": "ask",
+        "drag": "ask",
+        "mouse_button_down": "ask",
+        "mouse_button_up": "ask",
+        "mouse_drag": "ask",
+        "parallel_mouse_drag": "ask",
+        "scroll": "ask",
+        "move_cursor": "ask",
+        "type_text": "ask",
+        "type_text_chars": "ask",
+        "press_key": "ask",
+        "hotkey": "ask",
+        "set_value": "ask",
+        "set_config": "ask",
+        "start_recording": "ask",
+        "stop_recording": "ask",
+        "install_ffmpeg": "ask",
+        "set_agent_cursor_enabled": "ask",
+        "set_agent_cursor_motion": "ask",
+        "set_agent_cursor_style": "ask",
+        "replay_trajectory": "ask",
+        "zoom": "ask",
+        "page": "ask"
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import logger from '@shared/logger'
 // src/main/presenter/mcpPresenter/inMemoryServers/deepResearchServer.ts
 // 主要代码参考自 https://github.com/pinkpixel-dev/deep-research-mcp
 // 已替换搜索引擎为 Bocha，重写页面内容提取逻辑。
@@ -5,8 +6,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import { zodToJsonSchema } from 'zod-to-json-schema'
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import { toDeepChatJsonSchema } from '@shared/lib/zodJsonSchema'
+import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import axios from 'axios'
 import { presenter } from '@/presenter'
 import { nanoid } from 'nanoid'
@@ -169,10 +170,11 @@ export class DeepResearchServer {
 
   constructor(env?: Record<string, unknown>) {
     // 检查 Bocha API 密钥是否已提供
-    if (!env?.BOCHA_API_KEY) {
+    const bochaApiKey = String(env?.BOCHA_API_KEY ?? '')
+    if (!bochaApiKey) {
       throw new Error('需要 BOCHA_API_KEY')
     }
-    this.bochaApiKey = env.BOCHA_API_KEY as string
+    this.bochaApiKey = bochaApiKey
 
     this.server = new Server(
       {
@@ -218,7 +220,7 @@ export class DeepResearchServer {
 
     expiredSessions.forEach((sessionId) => {
       this.researchSessions.delete(sessionId)
-      console.log(`已清理过期研究会话: ${sessionId}`)
+      logger.info(`已清理过期研究会话: ${sessionId}`)
     })
 
     // 如果会话数超限，清理最早访问的会话
@@ -230,7 +232,7 @@ export class DeepResearchServer {
       const toRemove = sortedSessions.slice(0, this.researchSessions.size - this.MAX_SESSIONS)
       toRemove.forEach(([sessionId]) => {
         this.researchSessions.delete(sessionId)
-        console.log(`因超限已清理旧研究会话: ${sessionId}`)
+        logger.info(`因超限已清理旧研究会话: ${sessionId}`)
       })
     }
   }
@@ -269,7 +271,7 @@ export class DeepResearchServer {
   private cleanupSession(sessionId: string): void {
     const removed = this.researchSessions.delete(sessionId)
     if (removed) {
-      console.log(`研究会话已清理: ${sessionId}`)
+      logger.info(`研究会话已清理: ${sessionId}`)
     }
   }
 
@@ -282,27 +284,48 @@ export class DeepResearchServer {
           {
             name: 'start_deep_research',
             description: '启动一个新的深度研究会话。返回 session_id 用于后续操作。',
-            inputSchema: zodToJsonSchema(StartDeepResearchArgsSchema)
+            inputSchema: toDeepChatJsonSchema(StartDeepResearchArgsSchema),
+            annotations: {
+              title: 'Start Deep Research',
+              destructiveHint: false
+            }
           },
           {
             name: 'execute_single_web_search',
             description: '在研究会话内执行一次网页搜索。',
-            inputSchema: zodToJsonSchema(SingleWebSearchArgsSchema)
+            inputSchema: toDeepChatJsonSchema(SingleWebSearchArgsSchema),
+            annotations: {
+              title: 'Execute Web Search',
+              readOnlyHint: false,
+              openWorldHint: true
+            }
           },
           {
             name: 'request_research_data',
             description: '请求当前会话中新增的搜索结果和研究背景，供 LLM 反思。',
-            inputSchema: zodToJsonSchema(RequestResearchDataArgsSchema)
+            inputSchema: toDeepChatJsonSchema(RequestResearchDataArgsSchema),
+            annotations: {
+              title: 'Request Research Data',
+              readOnlyHint: true
+            }
           },
           {
             name: 'submit_reflection_results',
             description: 'LLM 提交其对研究数据的反思结果（如是否需更多研究、建议查询等）。',
-            inputSchema: zodToJsonSchema(SubmitReflectionResultsArgsSchema)
+            inputSchema: toDeepChatJsonSchema(SubmitReflectionResultsArgsSchema),
+            annotations: {
+              title: 'Submit Reflection Results',
+              destructiveHint: false
+            }
           },
           {
             name: 'generate_final_answer',
             description: '根据累积研究生成最终答案，并清理会话数据。',
-            inputSchema: zodToJsonSchema(GenerateFinalAnswerArgsSchema)
+            inputSchema: toDeepChatJsonSchema(GenerateFinalAnswerArgsSchema),
+            annotations: {
+              title: 'Generate Final Answer',
+              destructiveHint: true
+            }
           }
         ]
       }
@@ -632,7 +655,7 @@ export class DeepResearchServer {
       this.cleanupTimer = null
     }
     this.researchSessions.clear() // 清理所有会话
-    console.log('DeepResearchServer 已销毁，所有会话已清理')
+    logger.info('DeepResearchServer 已销毁，所有会话已清理')
   }
 
   // 获取会话统计信息 (用于调试和监控)

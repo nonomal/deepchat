@@ -1,229 +1,534 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, onBeforeUnmount } from 'vue'
+import { onMounted, ref, watch, onBeforeUnmount, computed } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import UpdateDialog from './components/ui/UpdateDialog.vue'
-import { usePresenter } from './composables/usePresenter'
+import { createConfigClient } from '@api/ConfigClient'
+import { createOnboardingClient } from '@api/OnboardingClient'
 import SelectedTextContextMenu from './components/message/SelectedTextContextMenu.vue'
 import { useArtifactStore } from './stores/artifact'
-import { useChatStore } from '@/stores/chat'
-import { NOTIFICATION_EVENTS, SHORTCUT_EVENTS } from './events'
-import Toaster from './components/ui/toast/Toaster.vue'
-import { useToast } from './components/ui/toast/use-toast'
-import { useSettingsStore } from '@/stores/settings'
-import { useThemeStore } from '@/stores/theme'
+import { useSessionStore } from '@/stores/ui/session'
+import { useAgentStore } from '@/stores/ui/agent'
+import { useDraftStore, type StartDeeplinkPayload } from '@/stores/ui/draft'
+import { usePageRouterStore } from '@/stores/ui/pageRouter'
+import { Toaster } from '@shadcn/components/ui/sonner'
+import { useToast } from '@/components/use-toast'
+import { useUiSettingsStore } from '@/stores/uiSettingsStore'
+import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useLanguageStore } from '@/stores/language'
+import { useI18n } from 'vue-i18n'
 import TranslatePopup from '@/components/popup/TranslatePopup.vue'
+import ModelCheckDialog from '@/components/settings/ModelCheckDialog.vue'
+import { useModelCheckStore } from '@/stores/modelCheck'
+import MessageDialog from './components/ui/MessageDialog.vue'
+import McpSamplingDialog from '@/components/mcp/McpSamplingDialog.vue'
+import { initAppStores, useMcpInstallDeeplinkHandler } from '@/lib/storeInitializer'
+import { ensureIconsLoaded } from '@/lib/iconLoader'
+import 'vue-sonner/style.css' // vue-sonner v2 requires this import
+import { useFontManager } from './composables/useFontManager'
+import AppBar from '@/components/AppBar.vue'
+import { useDeviceVersion } from '@/composables/useDeviceVersion'
+import WindowSideBar from './components/WindowSideBar.vue'
+import SpotlightOverlay from '@/components/spotlight/SpotlightOverlay.vue'
+import { useSpotlightStore } from '@/stores/ui/spotlight'
+import { useSidepanelStore } from '@/stores/ui/sidepanel'
+import { useSidebarStore } from '@/stores/ui/sidebar'
+import { useProviderStore } from '@/stores/providerStore'
+import { useModelStore } from '@/stores/modelStore'
+import { useAppIpcRuntime } from '@/composables/useAppIpcRuntime'
+import {
+  clearGuidedOnboardingResumeIntent,
+  GUIDED_ONBOARDING_RESUME_REQUESTED_EVENT,
+  readGuidedOnboardingResumeIntent,
+  type GuidedOnboardingResumeRequestDetail,
+  type GuidedOnboardingResumeTrigger
+} from '@/lib/onboardingResume'
+import type { GuidedOnboardingStepId } from '@shared/contracts/routes'
+import type { DatabaseRepairSuggestedPayload } from '@shared/presenter'
+import { createWindowClient } from '@api/WindowClient'
+
+const DEV_WELCOME_OVERRIDE_KEY = '__deepchat_dev_force_welcome'
 
 const route = useRoute()
-const configPresenter = usePresenter('configPresenter')
+const configClient = createConfigClient()
+const onboardingClient = createOnboardingClient()
+const windowClient = createWindowClient()
 const artifactStore = useArtifactStore()
-const chatStore = useChatStore()
+const sessionStore = useSessionStore()
+const agentStore = useAgentStore()
+const draftStore = useDraftStore()
+const pageRouterStore = usePageRouterStore()
+const sidepanelStore = useSidepanelStore()
+const sidebarStore = useSidebarStore()
+const spotlightStore = useSpotlightStore()
 const { toast } = useToast()
-const settingsStore = useSettingsStore()
+const uiSettingsStore = useUiSettingsStore()
+const { setupFontListener } = useFontManager()
+setupFontListener()
+
+const { isWinMacOS } = useDeviceVersion()
+
 const themeStore = useThemeStore()
 const langStore = useLanguageStore()
-// 错误通知队列及当前正在显示的错误
+const modelCheckStore = useModelCheckStore()
+const providerStore = useProviderStore()
+const modelStore = useModelStore()
+const { t } = useI18n()
+const toasterTheme = computed(() =>
+  themeStore.themeMode === 'system' ? (themeStore.isDark ? 'dark' : 'light') : themeStore.themeMode
+)
+// Error notification queue and currently displayed error
 const errorQueue = ref<Array<{ id: string; title: string; message: string; type: string }>>([])
 const currentErrorId = ref<string | null>(null)
-const errorDisplayTimer = ref<number | null>(null)
+let errorDisplayTimer: number | null = null
 
-const isMacOS = ref(false)
-const devicePresenter = usePresenter('devicePresenter')
-// 监听主题和字体大小变化，直接更新 body class
+const { setup: setupMcpDeeplink, cleanup: cleanupMcpDeeplink } = useMcpInstallDeeplinkHandler()
+
+const resolveThemeName = (themeMode: ThemeMode, isDark: boolean) => {
+  return themeMode === 'system' ? (isDark ? 'dark' : 'light') : themeMode
+}
+
+const syncAppearanceClasses = (themeName: string, fontSizeClass: string) => {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  const root = document.documentElement
+  // 切换期间临时禁用过渡，让主题瞬时生效，避免大量元素同时跑颜色过渡造成的重绘卡顿
+  root.classList.add('dc-theme-switching')
+
+  for (const target of [root, document.body]) {
+    target.classList.remove('light', 'dark', 'system')
+    target.classList.add(themeName)
+    target.classList.remove('text-xs', 'text-sm', 'text-base', 'text-lg', 'text-xl', 'text-2xl')
+    target.classList.add(fontSizeClass)
+  }
+
+  // 强制同步重算，使本次类切换在「过渡已禁用」的状态下完成
+  void root.offsetWidth
+  // 下一帧恢复过渡，不影响日常 hover 等交互动画
+  requestAnimationFrame(() => {
+    root.classList.remove('dc-theme-switching')
+  })
+}
+
 watch(
-  [() => themeStore.themeMode, () => settingsStore.fontSizeClass],
-  ([newTheme, newFontSizeClass], [oldTheme, oldFontSizeClass]) => {
-    if (oldTheme) {
-      document.documentElement.classList.remove(oldTheme)
-    }
-    if (oldFontSizeClass) {
-      document.documentElement.classList.remove(oldFontSizeClass)
-    }
-    document.documentElement.classList.add(newTheme)
-    document.documentElement.classList.add(newFontSizeClass)
-    console.log('newTheme', themeStore.themeMode)
+  [() => themeStore.themeMode, () => themeStore.isDark, () => uiSettingsStore.fontSizeClass],
+  ([themeMode, isDark, fontSizeClass]) => {
+    const nextThemeName = resolveThemeName(themeMode, isDark)
+    syncAppearanceClasses(nextThemeName, fontSizeClass)
   },
-  { immediate: false } // 初始化在 onMounted 中处理
+  { immediate: true }
 )
 
-// 处理错误通知
+// Handle error notifications
 const showErrorToast = (error: { id: string; title: string; message: string; type: string }) => {
-  // 查找队列中是否已存在相同ID的错误，防止重复
+  // Check if error with same ID already exists in queue to prevent duplicates
   const existingErrorIndex = errorQueue.value.findIndex((e) => e.id === error.id)
 
   if (existingErrorIndex === -1) {
-    // 如果当前有错误正在展示，将新错误放入队列
+    // If there's currently an error being displayed, add new error to queue
     if (currentErrorId.value) {
       if (errorQueue.value.length > 5) {
         errorQueue.value.shift()
       }
       errorQueue.value.push(error)
     } else {
-      // 否则直接展示这个错误
+      // Otherwise display this error directly
       displayError(error)
     }
   }
 }
 
-// 显示指定的错误
+// Display specified error
 const displayError = (error: { id: string; title: string; message: string; type: string }) => {
-  // 更新当前显示的错误ID
+  // Update currently displayed error ID
   currentErrorId.value = error.id
 
-  // 显示错误通知
+  // Show error notification
   const { dismiss } = toast({
     title: error.title,
     description: error.message,
     variant: 'destructive',
     onOpenChange: (open) => {
       if (!open) {
-        // 用户手动关闭时也显示下一个错误
+        // Also show next error when user manually closes
         handleErrorClosed()
       }
     }
   })
 
-  // 设置定时器，3秒后自动关闭当前错误
-  if (errorDisplayTimer.value) {
-    clearTimeout(errorDisplayTimer.value)
+  // Set timer to automatically close current error after 3 seconds
+  if (errorDisplayTimer) {
+    clearTimeout(errorDisplayTimer)
   }
 
-  errorDisplayTimer.value = window.setTimeout(() => {
-    console.log('errorDisplayTimer.value', errorDisplayTimer.value)
-    // 处理错误关闭后的逻辑
+  errorDisplayTimer = window.setTimeout(() => {
+    // Handle logic after error is closed
     dismiss()
     handleErrorClosed()
   }, 3000)
 }
 
-// 处理错误关闭后的逻辑
+// Handle logic after error is closed
 const handleErrorClosed = () => {
-  // 清除当前错误ID
+  // Clear current error ID
   currentErrorId.value = null
 
-  // 显示队列中的下一个错误（如果有）
+  // Display next error in queue (if any)
   if (errorQueue.value.length > 0) {
     const nextError = errorQueue.value.shift()
     if (nextError) {
       displayError(nextError)
     }
   } else {
-    // 队列为空，清除定时器
-    if (errorDisplayTimer.value) {
-      clearTimeout(errorDisplayTimer.value)
-      errorDisplayTimer.value = null
+    // Queue is empty, clear timer
+    if (errorDisplayTimer) {
+      clearTimeout(errorDisplayTimer)
+      errorDisplayTimer = null
     }
   }
 }
 
 const router = useRouter()
 const activeTab = ref('chat')
+const isStartupRouteReady = ref(false)
+const processingStartDeeplinkToken = ref<number | null>(null)
+const processedStartDeeplinkToken = ref<number | null>(null)
 
-const getInitComplete = async () => {
-  const initComplete = await configPresenter.getSetting('init_complete')
-  if (!initComplete) {
-    router.push({ name: 'welcome' })
+const isDevWelcomeOverrideEnabled = () => {
+  if (!import.meta.env.DEV) return false
+
+  try {
+    return window.sessionStorage.getItem(DEV_WELCOME_OVERRIDE_KEY) === '1'
+  } catch {
+    return false
   }
 }
 
-// 处理字体缩放
+const ensureStartupWelcomeState = async () => {
+  try {
+    await router.isReady()
+
+    const currentRoute = router.currentRoute.value
+    const isWelcomeRoute = currentRoute.name === 'welcome' || currentRoute.path === '/welcome'
+
+    if (isDevWelcomeOverrideEnabled()) {
+      if (!isWelcomeRoute) {
+        await router.replace({ name: 'welcome' })
+      }
+      return
+    }
+
+    const initComplete = Boolean(await configClient.getSetting('init_complete'))
+    let onboardingState: Awaited<ReturnType<typeof onboardingClient.getState>> | null = null
+
+    try {
+      onboardingState = await onboardingClient.getState()
+    } catch (error) {
+      console.warn('[App] Failed to load onboarding state during startup:', error)
+    }
+
+    if (onboardingState?.status === 'completed') {
+      if (isWelcomeRoute) {
+        await router.replace({ name: 'chat' })
+      }
+      return
+    }
+
+    if (!initComplete || onboardingState?.status === 'active') {
+      if (!initComplete && onboardingState?.status !== 'active') {
+        try {
+          onboardingState = await onboardingClient.start()
+        } catch (error) {
+          console.warn('[App] Failed to start onboarding during startup:', error)
+        }
+      }
+
+      if (!isWelcomeRoute) {
+        await router.replace({ name: 'welcome' })
+      }
+      return
+    }
+
+    if (isWelcomeRoute) {
+      await router.replace({ name: 'chat' })
+    }
+  } finally {
+    isStartupRouteReady.value = true
+  }
+}
+
+// Handle font scaling
 const handleZoomIn = () => {
-  // 字体大小增加逻辑
-  const currentLevel = settingsStore.fontSizeLevel
-  settingsStore.updateFontSizeLevel(currentLevel + 1)
+  // Font size increase logic
+  const currentLevel = uiSettingsStore.fontSizeLevel
+  uiSettingsStore.updateFontSizeLevel(currentLevel + 1)
 }
 
 const handleZoomOut = () => {
-  // 字体大小减小逻辑
-  const currentLevel = settingsStore.fontSizeLevel
-  settingsStore.updateFontSizeLevel(currentLevel - 1)
+  // Font size decrease logic
+  const currentLevel = uiSettingsStore.fontSizeLevel
+  uiSettingsStore.updateFontSizeLevel(currentLevel - 1)
 }
 
 const handleZoomResume = () => {
-  // 重置字体大小
-  settingsStore.updateFontSizeLevel(1) // 1 对应 'text-base'，默认字体大小
+  // Reset font size
+  uiSettingsStore.updateFontSizeLevel(1) // 1 corresponds to 'text-base', default font size
 }
 
-// 处理创建新会话
-const handleCreateNewConversation = () => {
+// Handle creating new conversation
+const handleCreateNewConversation = async () => {
   try {
-    chatStore.createNewEmptyThread()
-    // 简化处理，只记录日志，实际功能待实现
+    await sessionStore.startNewConversation({ refresh: true })
   } catch (error) {
-    console.error('创建新会话失败:', error)
+    console.error('Failed to create new conversation:', error)
   }
 }
 
-// 处理进入设置页面
-const handleGoSettings = () => {
-  const currentRoute = router.currentRoute.value
-  // 检查当前路由或其父路由是否已经是settings
-  if (!currentRoute.path.startsWith('/settings')) {
-    router.push({ name: 'settings' })
+// Removed GO_SETTINGS handler; now handled in main via tab logic
+
+const activatePendingStartDeeplink = async () => {
+  const pendingStartDeeplink = draftStore.pendingStartDeeplink
+  if (!pendingStartDeeplink || !isStartupRouteReady.value) {
+    return
   }
-}
 
-getInitComplete()
+  const token = pendingStartDeeplink.token
+  if (processingStartDeeplinkToken.value === token || processedStartDeeplinkToken.value === token) {
+    return
+  }
 
-onMounted(() => {
-  devicePresenter.getDeviceInfo().then((deviceInfo) => {
-    isMacOS.value = deviceInfo.platform === 'darwin'
-  })
-  // 设置初始 body class
-  document.body.classList.add(themeStore.themeMode)
-  document.body.classList.add(settingsStore.fontSizeClass)
+  processingStartDeeplinkToken.value = token
 
-  // 监听全局错误通知事件
-  window.electron.ipcRenderer.on(NOTIFICATION_EVENTS.SHOW_ERROR, (_event, error) => {
-    showErrorToast(error)
-  })
-
-  // 监听快捷键事件
-  window.electron.ipcRenderer.on(SHORTCUT_EVENTS.ZOOM_IN, () => {
-    handleZoomIn()
-  })
-
-  window.electron.ipcRenderer.on(SHORTCUT_EVENTS.ZOOM_OUT, () => {
-    handleZoomOut()
-  })
-
-  window.electron.ipcRenderer.on(SHORTCUT_EVENTS.ZOOM_RESUME, () => {
-    handleZoomResume()
-  })
-
-  window.electron.ipcRenderer.on(SHORTCUT_EVENTS.CREATE_NEW_CONVERSATION, () => {
-    // 检查当前路由是否为聊天页面
-    const currentRoute = router.currentRoute.value
-    if (currentRoute.name !== 'chat') {
+  try {
+    const initComplete = Boolean(await configClient.getSetting('init_complete'))
+    if (!initComplete) {
       return
     }
-    handleCreateNewConversation()
+
+    await router.isReady()
+    if (router.currentRoute.value.name !== 'chat') {
+      await router.push({ name: 'chat' })
+    }
+
+    agentStore.setSelectedAgent('deepchat')
+    if (sessionStore.hasActiveSession) {
+      await sessionStore.closeSession()
+      processedStartDeeplinkToken.value = token
+      return
+    }
+
+    pageRouterStore.goToNewThread({ refresh: true })
+    processedStartDeeplinkToken.value = token
+  } finally {
+    if (processingStartDeeplinkToken.value === token) {
+      processingStartDeeplinkToken.value = null
+    }
+  }
+}
+
+const handleStartDeeplink = (_event: unknown, payload?: Omit<StartDeeplinkPayload, 'token'>) => {
+  if (!payload?.msg) {
+    return
+  }
+
+  draftStore.setPendingStartDeeplink({
+    msg: payload.msg,
+    modelId: payload.modelId ?? null,
+    systemPrompt: payload.systemPrompt ?? '',
+    mentions: Array.isArray(payload.mentions) ? payload.mentions : [],
+    autoSend: Boolean(payload.autoSend)
   })
+  void activatePendingStartDeeplink()
+}
 
-  window.electron.ipcRenderer.on(SHORTCUT_EVENTS.GO_SETTINGS, () => {
-    handleGoSettings()
+const handleDatabaseRepairSuggested = (payload: unknown) => {
+  const repairPayload = payload as DatabaseRepairSuggestedPayload | undefined
+  if (!repairPayload) {
+    return
+  }
+
+  toast({
+    title: t(repairPayload.title),
+    description: t(repairPayload.message, {
+      reason: t(`settings.data.databaseRepair.reasons.${repairPayload.reason}`)
+    }),
+    action: {
+      label: t('settings.data.databaseRepair.toastAction'),
+      onClick: () => {
+        void configClient.openSettings({
+          routeName: 'settings-database',
+          section: 'database-repair'
+        })
+      }
+    }
   })
+}
 
-  window.electron.ipcRenderer.on(NOTIFICATION_EVENTS.SYS_NOTIFY_CLICKED, (_, msg) => {
-    let threadId: string | null = null
+const handleStartGuidedOnboardingDev = async () => {
+  if (!import.meta.env.DEV) {
+    return
+  }
 
-    // 检查msg是否为字符串且是否以chat/开头
+  try {
+    clearGuidedOnboardingResumeIntent()
+    await onboardingClient.start({
+      force: true,
+      stepId: 'select-provider'
+    })
+
+    if (router.currentRoute.value.name !== 'welcome') {
+      await router.replace({ name: 'welcome' })
+    }
+  } catch (error) {
+    console.warn('[App] Failed to start guided onboarding from dev trigger:', error)
+  }
+}
+
+const CHAT_GUIDED_ONBOARDING_STEP_IDS = new Set<GuidedOnboardingStepId>([
+  'switch-agent',
+  'switch-model',
+  'first-chat'
+])
+
+const routeToGuidedOnboardingStep = async (stepId: GuidedOnboardingStepId | null) => {
+  if (stepId && CHAT_GUIDED_ONBOARDING_STEP_IDS.has(stepId)) {
+    if (router.currentRoute.value.name !== 'chat') {
+      await router.replace({ name: 'chat' })
+    }
+
+    pageRouterStore.goToNewThread({ refresh: true })
+    return
+  }
+
+  if (router.currentRoute.value.name !== 'welcome') {
+    await router.replace({ name: 'welcome' })
+  }
+}
+
+const handleResumeGuidedOnboarding = async (trigger: GuidedOnboardingResumeTrigger) => {
+  const resumeIntent = readGuidedOnboardingResumeIntent()
+  if (!resumeIntent || resumeIntent.trigger !== trigger) {
+    return
+  }
+
+  try {
+    const onboardingState = await onboardingClient.getState()
+
+    if (onboardingState.status !== 'active') {
+      clearGuidedOnboardingResumeIntent()
+      if (onboardingState.status === 'completed') {
+        if (router.currentRoute.value.name !== 'chat') {
+          await router.replace({ name: 'chat' })
+        }
+
+        pageRouterStore.goToNewThread({ refresh: true })
+      }
+      return
+    }
+
+    clearGuidedOnboardingResumeIntent()
+    await routeToGuidedOnboardingStep(onboardingState.currentStepId)
+  } catch (error) {
+    console.warn('[App] Failed to resume guided onboarding:', error)
+  }
+}
+
+const handleGuidedOnboardingResumeRequested = (event: Event) => {
+  const detail = (event as CustomEvent<GuidedOnboardingResumeRequestDetail>).detail
+  if (!detail?.trigger) {
+    return
+  }
+
+  void handleResumeGuidedOnboarding(detail.trigger)
+}
+
+const { setup: setupAppIpcRuntime, cleanup: cleanupAppIpcRuntime } = useAppIpcRuntime({
+  handleStartDeeplink: (payload) => {
+    handleStartDeeplink(undefined, payload as Omit<StartDeeplinkPayload, 'token'> | undefined)
+  },
+  handleStartGuidedOnboardingDev,
+  handleWindowFocused: () => handleResumeGuidedOnboarding('window-focus'),
+  showErrorToast,
+  handleDatabaseRepairSuggested,
+  handleZoomIn,
+  handleZoomOut,
+  handleZoomResume,
+  handleCreateNewConversation,
+  handleToggleSidebar: () => {
+    sidebarStore.toggleSidebar()
+  },
+  handleToggleWorkspace: () => {
+    if (pageRouterStore.currentRoute !== 'chat' || !pageRouterStore.chatSessionId) {
+      return
+    }
+
+    sidepanelStore.toggleWorkspace(pageRouterStore.chatSessionId)
+  },
+  openSpotlight: () => {
+    spotlightStore.openSpotlight()
+  },
+  handleDataResetComplete: () => {
+    toast({
+      title: t('settings.data.resetCompleteDevTitle'),
+      description: t('settings.data.resetCompleteDevMessage'),
+      variant: 'default',
+      duration: 15000
+    })
+  },
+  handleSystemNotificationClick: (msg) => {
+    let sessionId: string | null = null
+
     if (typeof msg === 'string' && msg.startsWith('chat/')) {
-      // 按/分割，检查是否有三段数据
       const parts = msg.split('/')
       if (parts.length === 3) {
-        // 提取中间部分作为threadId
-        threadId = parts[1]
+        sessionId = parts[1]
       }
-    } else if (msg && msg.threadId) {
-      // 兼容原有格式，如果msg是对象且包含threadId属性
-      threadId = msg.threadId
+    } else if (msg && typeof msg === 'object' && 'threadId' in msg) {
+      sessionId = (msg as { threadId?: string }).threadId ?? null
     }
 
-    if (threadId) {
-      chatStore.setActiveThread(threadId)
+    if (sessionId) {
+      void sessionStore.selectSession(sessionId)
     }
-  })
+  },
+  getCurrentRouteName: () => router.currentRoute.value.name
+})
+
+// Handle ESC key - close floating chat window
+const handleEscKey = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') {
+    void windowClient.closeFloatingCurrent()
+  }
+}
+
+void ensureStartupWelcomeState()
+
+watch(
+  () =>
+    [isStartupRouteReady.value, route.name, draftStore.pendingStartDeeplink?.token ?? 0] as const,
+  () => {
+    void activatePendingStartDeeplink()
+  },
+  { immediate: true }
+)
+
+onMounted(() => {
+  window.addEventListener('keydown', handleEscKey)
+  window.addEventListener(
+    GUIDED_ONBOARDING_RESUME_REQUESTED_EVENT,
+    handleGuidedOnboardingResumeRequested as EventListener
+  )
+
+  // Ensure icons are loaded (load asynchronously, can happen in parallel with store init)
+  void ensureIconsLoaded()
+
+  // Start shell-critical data directly from the main window so it does not depend on settings.
+  void initAppStores()
+  void providerStore.ensureInitialized()
+  void modelStore.initialize()
+  void sessionStore.fetchSessions()
+  setupMcpDeeplink()
+  setupAppIpcRuntime()
 
   watch(
     () => activeTab.value,
@@ -243,60 +548,77 @@ onMounted(() => {
       if (newTab !== activeTab.value) {
         activeTab.value = newTab
       }
-      // 路由变化时关闭 artifacts 页面
+      // Close artifacts page when route changes
       artifactStore.hideArtifact()
     }
   )
 
-  // 监听当前对话的变化
+  // Listen for changes to current conversation
   watch(
-    () => chatStore.getActiveThreadId(),
+    () => sessionStore.activeSessionId,
     () => {
-      // 当切换对话时关闭 artifacts 页面
+      // Close artifacts page when switching conversations
       artifactStore.hideArtifact()
-    }
-  )
-
-  watch(
-    () => artifactStore.isOpen,
-    () => {
-      chatStore.isSidebarOpen = false
     }
   )
 })
 
-// 在组件卸载前清除定时器和事件监听
+// Clear timers and event listeners before component unmounts
 onBeforeUnmount(() => {
-  if (errorDisplayTimer.value) {
-    clearTimeout(errorDisplayTimer.value)
-    errorDisplayTimer.value = null
+  if (errorDisplayTimer) {
+    clearTimeout(errorDisplayTimer)
+    errorDisplayTimer = null
   }
 
-  // 移除快捷键事件监听
-  window.electron.ipcRenderer.removeAllListeners(SHORTCUT_EVENTS.ZOOM_IN)
-  window.electron.ipcRenderer.removeAllListeners(SHORTCUT_EVENTS.ZOOM_OUT)
-  window.electron.ipcRenderer.removeAllListeners(SHORTCUT_EVENTS.ZOOM_RESUME)
-  window.electron.ipcRenderer.removeAllListeners(SHORTCUT_EVENTS.CREATE_NEW_CONVERSATION)
-  window.electron.ipcRenderer.removeAllListeners(SHORTCUT_EVENTS.GO_SETTINGS)
-  window.electron.ipcRenderer.removeAllListeners(NOTIFICATION_EVENTS.SYS_NOTIFY_CLICKED)
+  window.removeEventListener('keydown', handleEscKey)
+  window.removeEventListener(
+    GUIDED_ONBOARDING_RESUME_REQUESTED_EVENT,
+    handleGuidedOnboardingResumeRequested as EventListener
+  )
+  cleanupAppIpcRuntime()
+  cleanupMcpDeeplink()
 })
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-container">
-    <div
-      class="flex flex-row h-0 flex-grow relative overflow-hidden px-[1px] py-[1px]"
-      :dir="langStore.dir"
-    >
-      <!-- 主内容区域 -->
+  <div
+    data-testid="app-root"
+    class="flex flex-col h-screen"
+    :class="isWinMacOS ? 'bg-window-background' : 'bg-background'"
+  >
+    <AppBar />
+    <div class="flex flex-row h-0 grow relative overflow-hidden px-px py-px" :dir="langStore.dir">
+      <div class="flex flex-row w-full h-full">
+        <WindowSideBar></WindowSideBar>
 
-      <RouterView />
+        <!-- Main content area -->
+        <div
+          data-testid="app-main"
+          class="flex h-full min-h-0 flex-1 min-w-0 flex-col overflow-hidden rounded-tl-xl border-l border-t border-black/20 bg-background dark:border-white/10"
+        >
+          <div class="min-h-0 flex-1">
+            <RouterView v-if="isStartupRouteReady" />
+          </div>
+        </div>
+      </div>
     </div>
-    <!-- 全局更新弹窗 -->
-    <UpdateDialog />
-    <!-- 全局Toast提示 -->
-    <Toaster />
+    <!-- Global message dialog -->
+    <MessageDialog />
+    <McpSamplingDialog />
+    <!-- Global Toast notifications -->
+    <Toaster :theme="toasterTheme" />
     <SelectedTextContextMenu />
     <TranslatePopup />
+    <SpotlightOverlay />
+    <!-- Global model check dialog -->
+    <ModelCheckDialog
+      :open="modelCheckStore.isDialogOpen"
+      :provider-id="modelCheckStore.currentProviderId"
+      @update:open="
+        (open) => {
+          if (!open) modelCheckStore.closeDialog()
+        }
+      "
+    />
   </div>
 </template>

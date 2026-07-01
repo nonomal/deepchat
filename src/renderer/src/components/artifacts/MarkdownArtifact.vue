@@ -3,7 +3,11 @@
     ref="messageBlock"
     class="markdown-content-wrapper relative w-full px-4 pb-8 artifact-dialog-content"
   >
-    <MarkdownRenderer :content="props.block.content || ''" @copy="handleCopyClick" />
+    <MarkdownRenderer
+      :content="props.block.content || ''"
+      :link-context="{ source: 'artifact' }"
+      @copy="handleCopyClick"
+    />
   </div>
 </template>
 
@@ -30,10 +34,20 @@ const handleCopyClick = () => {
 </script>
 
 <style>
+@reference '../../assets/style.css';
+
 .markdown-content-wrapper {
-  @apply leading-7;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  line-height: 1.75rem;
+  font-family: var(
+    --dc-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif
+  );
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

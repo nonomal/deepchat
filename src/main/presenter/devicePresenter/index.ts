@@ -1,3 +1,4 @@
+import logger from '@shared/logger'
 import { IDevicePresenter, DeviceInfo, MemoryInfo, DiskInfo } from '../../../shared/presenter'
 import os from 'os'
 import { exec } from 'child_process'
@@ -7,13 +8,64 @@ import path from 'path'
 import { app, dialog } from 'electron'
 import { nanoid } from 'nanoid'
 import axios from 'axios'
+import { is } from '@electron-toolkit/utils'
+import { svgSanitizer } from '../../lib/svgSanitizer'
+import { publishDeepchatEvent } from '@/routes/publishDeepchatEvent'
 const execAsync = promisify(exec)
 
+type DeviceResetRuntime = {
+  closeSqlite?: () => void
+  destroyKnowledge?: () => Promise<void> | void
+}
+
+function toMimeType(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.find((item): item is string => typeof item === 'string') ?? ''
+  }
+
+  return ''
+}
+
+function getImageExtensionFromMimeType(value: unknown): string {
+  const mimeType = toMimeType(value).toLowerCase()
+
+  if (mimeType.includes('png')) {
+    return 'png'
+  }
+  if (mimeType.includes('gif')) {
+    return 'gif'
+  }
+  if (mimeType.includes('webp')) {
+    return 'webp'
+  }
+  if (mimeType.includes('svg')) {
+    return 'svg'
+  }
+
+  return 'jpg'
+}
+
 export class DevicePresenter implements IDevicePresenter {
+  private resetRuntime: DeviceResetRuntime | null = null
+
+  constructor(resetRuntime?: DeviceResetRuntime) {
+    this.resetRuntime = resetRuntime ?? null
+  }
+
+  setResetRuntime(resetRuntime: DeviceResetRuntime): void {
+    this.resetRuntime = resetRuntime
+  }
+
   static getDefaultHeaders(): Record<string, string> {
+    const version = app.getVersion()
     return {
       'HTTP-Referer': 'https://deepchatai.cn',
-      'X-Title': 'DeepChat'
+      'X-Title': 'DeepChat',
+      'User-Agent': `DeepChat/${version}`
     }
   }
   async getAppVersion(): Promise<string> {
@@ -21,12 +73,37 @@ export class DevicePresenter implements IDevicePresenter {
   }
 
   async getDeviceInfo(): Promise<DeviceInfo> {
+    const platform = process.platform
+    const osVersion = os.release()
+
+    // Build version metadata based on current platform
+    let osVersionMetadata: Array<{ name: string; build: number }> = []
+
+    if (platform === 'win32') {
+      osVersionMetadata = [
+        { name: 'Windows 11', build: 22000 },
+        { name: 'Windows 10', build: 10240 },
+        { name: 'Windows 8.1', build: 9600 },
+        { name: 'Windows 8', build: 9200 }
+      ]
+    } else if (platform === 'darwin') {
+      osVersionMetadata = [
+        { name: 'macOS Tahoe', build: 25 },
+        { name: 'macOS Sequoia', build: 24 },
+        { name: 'macOS Sonoma', build: 23 },
+        { name: 'macOS Ventura', build: 22 },
+        { name: 'macOS Monterey', build: 21 },
+        { name: 'macOS Big Sur', build: 20 }
+      ]
+    }
+
     return {
-      platform: process.platform,
+      platform,
       arch: process.arch,
       cpuModel: os.cpus()[0].model,
       totalMemory: os.totalmem(),
-      osVersion: os.release()
+      osVersion,
+      osVersionMetadata
     }
   }
 
@@ -158,19 +235,8 @@ export class DevicePresenter implements IDevicePresenter {
         timeout: 10000 // 10秒超时
       })
 
-      // 获取内容类型并确定文件扩展名
-      const contentType = response.headers['content-type'] || 'image/jpeg'
-      let extension = 'jpg'
-
-      if (contentType.includes('png')) {
-        extension = 'png'
-      } else if (contentType.includes('gif')) {
-        extension = 'gif'
-      } else if (contentType.includes('webp')) {
-        extension = 'webp'
-      } else if (contentType.includes('svg')) {
-        extension = 'svg'
-      }
+      // Handle string or string[] content-type headers consistently.
+      const extension = getImageExtensionFromMimeType(response.headers['content-type'])
 
       const saveFileName = `${fileName}.${extension}`
       const fullPath = path.join(cacheDir, saveFileName)
@@ -211,16 +277,7 @@ export class DevicePresenter implements IDevicePresenter {
       const base64Content = matches[2]
 
       // 根据MIME类型确定文件扩展名
-      let extension = 'jpg'
-      if (mimeType.includes('png')) {
-        extension = 'png'
-      } else if (mimeType.includes('gif')) {
-        extension = 'gif'
-      } else if (mimeType.includes('webp')) {
-        extension = 'webp'
-      } else if (mimeType.includes('svg')) {
-        extension = 'svg'
-      }
+      const extension = getImageExtensionFromMimeType(mimeType)
 
       const saveFileName = `${fileName}.${extension}`
       const fullPath = path.join(cacheDir, saveFileName)
@@ -277,6 +334,166 @@ export class DevicePresenter implements IDevicePresenter {
   }
 
   /**
+   * 根据类型重置数据
+   * @param resetType 重置类型：'chat' | 'knowledge' | 'config' | 'all'
+   */
+  async resetDataByType(resetType: 'chat' | 'knowledge' | 'config' | 'all'): Promise<void> {
+    try {
+      const userDataPath = app.getPath('userData')
+
+      const removeDirectory = (dirPath: string): void => {
+        if (fs.existsSync(dirPath)) {
+          fs.readdirSync(dirPath).forEach((file) => {
+            const currentPath = path.join(dirPath, file)
+            if (fs.lstatSync(currentPath).isDirectory()) {
+              removeDirectory(currentPath)
+            } else {
+              fs.unlinkSync(currentPath)
+            }
+          })
+          fs.rmdirSync(dirPath)
+        }
+      }
+
+      const removeFile = (filePath: string): void => {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath)
+        }
+      }
+
+      switch (resetType) {
+        case 'chat': {
+          // 删除聊天数据
+          logger.info('Resetting chat data...')
+          try {
+            if (this.resetRuntime?.closeSqlite) {
+              this.resetRuntime.closeSqlite()
+              logger.info('SQLite database connection closed')
+            }
+            await new Promise((resolve) => setTimeout(resolve, 500))
+          } catch (closeError) {
+            console.warn('Error closing SQLite connection:', closeError)
+          }
+          const appDbPath = path.join(userDataPath, 'app_db')
+          const mainDbFile = path.join(appDbPath, 'agent.db')
+          try {
+            removeFile(mainDbFile)
+            logger.info('Removed chat database file')
+          } catch (error) {
+            console.warn('Failed to remove chat database file:', error)
+          }
+          const auxiliaryFiles = ['agent.db-wal', 'agent.db-shm']
+          auxiliaryFiles.forEach((fileName) => {
+            const filePath = path.join(appDbPath, fileName)
+            if (fs.existsSync(filePath)) {
+              try {
+                removeFile(filePath)
+                logger.info('Cleaned up auxiliary file:', fileName)
+              } catch (error) {
+                console.warn('Failed to clean auxiliary file:', fileName, error)
+              }
+            }
+          })
+          break
+        }
+
+        case 'knowledge': {
+          // 删除知识库数据
+          logger.info('Resetting knowledge base data...')
+          try {
+            if (this.resetRuntime?.destroyKnowledge) {
+              await this.resetRuntime.destroyKnowledge()
+              logger.info('Knowledge database connections closed')
+            }
+            await new Promise((resolve) => setTimeout(resolve, 500))
+          } catch (closeError) {
+            console.warn('Error closing knowledge database connections:', closeError)
+          }
+          const knowledgeDbPath = path.join(userDataPath, 'app_db', 'KnowledgeBase')
+          logger.info('Removing knowledge base directory:', knowledgeDbPath)
+          removeDirectory(knowledgeDbPath)
+          break
+        }
+
+        case 'config': {
+          // 删除配置文件
+          logger.info('Resetting configuration files')
+          const configFiles = [
+            path.join(userDataPath, 'app-settings.json'),
+            path.join(userDataPath, 'mcp-settings.json'),
+            path.join(userDataPath, 'model-config.json'),
+            path.join(userDataPath, 'custom_prompts.json')
+          ]
+
+          configFiles.forEach((filePath) => {
+            try {
+              removeFile(filePath)
+              logger.info('Removed config file:', filePath)
+            } catch (error) {
+              console.warn('Failed to remove config file:', filePath, error)
+            }
+          })
+
+          try {
+            removeDirectory(path.join(userDataPath, 'provider_models'))
+            logger.info('Removed provider_models directory')
+          } catch (error) {
+            console.warn('Failed to remove provider_models directory:', error)
+          }
+          break
+        }
+
+        case 'all': {
+          // 删除整个用户数据目录
+          logger.info('Performing complete reset of user data...')
+          try {
+            if (this.resetRuntime?.closeSqlite) {
+              this.resetRuntime.closeSqlite()
+              logger.info('SQLite database connection closed')
+            }
+            if (this.resetRuntime?.destroyKnowledge) {
+              await this.resetRuntime.destroyKnowledge()
+              logger.info('Knowledge database connections closed')
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+          } catch (closeError) {
+            console.warn('Error closing database connections:', closeError)
+          }
+          logger.info('Removing user data directory:', userDataPath)
+          removeDirectory(userDataPath)
+          break
+        }
+
+        default:
+          throw new Error(`Unknown reset type: ${resetType}`)
+      }
+
+      this.restartAppWithDelay()
+    } catch (error) {
+      console.error('resetDataByType failed:', error)
+      throw error
+    }
+  }
+
+  private restartAppWithDelay(): void {
+    try {
+      if (is.dev) {
+        logger.info('开发环境下数据重置完成，发送通知到渲染进程')
+        publishDeepchatEvent('appRuntime.dataResetCompleteDev', {})
+        return
+      }
+
+      setTimeout(() => {
+        app.relaunch()
+        app.exit()
+      }, 1000)
+    } catch (error) {
+      console.error('重启失败:', error)
+      throw error
+    }
+  }
+
+  /**
    * 选择目录
    * @returns 返回所选目录的路径，如果用户取消则返回null
    */
@@ -287,12 +504,62 @@ export class DevicePresenter implements IDevicePresenter {
   }
 
   /**
+   * 选择文件
+   * @param options 文件选择选项
+   * @returns 返回所选文件的路径，如果用户取消则返回空数组
+   */
+  async selectFiles(options?: {
+    filters?: { name: string; extensions: string[] }[]
+    multiple?: boolean
+  }): Promise<{ canceled: boolean; filePaths: string[] }> {
+    const properties: ('openFile' | 'multiSelections')[] = ['openFile']
+    if (options?.multiple) {
+      properties.push('multiSelections')
+    }
+    return dialog.showOpenDialog({
+      properties,
+      filters: options?.filters
+    })
+  }
+
+  /**
    * 重启应用程序
    */
   restartApp(): Promise<void> {
-    console.log('restartApp')
+    logger.info('restartApp')
     app.relaunch()
     app.exit()
     return Promise.resolve()
+  }
+
+  /**
+   * 安全净化SVG内容
+   * @param svgContent 原始SVG内容
+   * @returns 净化后的SVG内容，如果净化失败则返回null
+   */
+  async sanitizeSvgContent(svgContent: string): Promise<string | null> {
+    try {
+      logger.info('Sanitizing SVG content, length:', svgContent.length)
+      // Debug: 显示SVG前100个字符
+      logger.info('SVG preview:', svgContent.substring(0, 100) + '...')
+
+      // 使用SVG净化器处理内容
+      const sanitizedContent = svgSanitizer.sanitize(svgContent)
+
+      if (sanitizedContent) {
+        logger.info('SVG content sanitized successfully, output length:', sanitizedContent.length)
+        logger.info('Comments preserved:', /<!--/.test(sanitizedContent))
+        return sanitizedContent
+      } else {
+        console.warn('SVG content was rejected by sanitizer')
+        // Debug: 检查具体是哪一步失败了
+        logger.info('Debug: SVG starts with <svg:', svgContent.trim().startsWith('<svg'))
+        logger.info('Debug: SVG contains dangerous content:', svgContent.includes('<script'))
+        return null
+      }
+    } catch (error) {
+      console.error('Error sanitizing SVG content:', error)
+      return null
+    }
   }
 }

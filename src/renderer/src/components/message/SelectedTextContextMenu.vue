@@ -1,10 +1,13 @@
-<!-- eslint-disable vue/no-v-html -->
 <template>
   <div></div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
+import { createContextMenuClient } from '@api/ContextMenuClient'
+
+const contextMenuClient = createContextMenuClient()
+const cleanupContextMenuListeners: Array<() => void> = []
 
 // 处理翻译事件
 const handleTranslate = (text: string, x?: number, y?: number) => {
@@ -21,19 +24,19 @@ const handleAskAI = (text: string) => {
 }
 
 onMounted(() => {
-  window.electron.ipcRenderer.on(
-    'context-menu-translate',
-    (_: unknown, text: string, x?: number, y?: number) => {
-      handleTranslate(text, x, y)
-    }
+  cleanupContextMenuListeners.push(
+    contextMenuClient.onTranslateRequested((payload) => {
+      handleTranslate(payload.text, payload.x, payload.y)
+    }),
+    contextMenuClient.onAskAiRequested((payload) => {
+      handleAskAI(payload.text)
+    })
   )
-  window.electron.ipcRenderer.on('context-menu-ask-ai', (_: unknown, text: string) => {
-    handleAskAI(text)
-  })
 })
 
 onUnmounted(() => {
-  window.electron.ipcRenderer.removeAllListeners('context-menu-translate')
-  window.electron.ipcRenderer.removeAllListeners('context-menu-ask-ai')
+  for (const cleanup of cleanupContextMenuListeners.splice(0)) {
+    cleanup()
+  }
 })
 </script>
