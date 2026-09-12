@@ -1,13 +1,41 @@
 <template>
   <div
-    class="text-xs bg-red-100 text-red-700 rounded-lg border border-red-400 flex flex-col gap-2 px-2 py-2"
+    class="text-muted-foreground text-sm flex flex-row gap-2 items-center py-2"
+    v-if="block.status === 'cancel'"
   >
-    <div class="flex flex-row gap-2 items-center cursor-pointer">
-      <Icon icon="lucide:info" class="w-4 h-4 text-red-700" />
-      <span class="flex-grow">{{ t('common.error.requestFailed') }}</span>
-    </div>
-    <div class="prose prose-sm max-w-full break-all whitespace-pre-wrap leading-7">
-      {{ t(block.content || '') }}
+    <Icon icon="lucide:refresh-cw-off"></Icon>
+    <span>{{ t(block.content || '') }}</span>
+  </div>
+  <div v-else class="cursor-default select-none">
+    <button
+      type="button"
+      class="flex flex-row items-center gap-1 rounded-sm text-xs text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      :aria-expanded="isExpanded"
+      :aria-controls="detailsId"
+      @click="isExpanded = !isExpanded"
+    >
+      {{ t('common.error.requestFailed') }}
+      <Icon
+        class="h-3.5 w-3.5 transition-transform duration-[var(--dc-motion-fast)] ease-[var(--dc-ease-out-soft)] motion-reduce:transition-none"
+        :class="isExpanded ? 'rotate-90' : 'rotate-0'"
+        icon="lucide:chevron-right"
+        aria-hidden="true"
+      />
+    </button>
+    <div
+      class="grid overflow-hidden transition-[grid-template-rows,opacity] duration-[var(--dc-motion-default)] ease-[var(--dc-ease-out-express)] motion-reduce:transition-none"
+      :class="isExpanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'"
+      :aria-hidden="!isExpanded"
+      :inert="isExpanded ? undefined : true"
+    >
+      <div class="min-h-0 overflow-hidden">
+        <div
+          :id="detailsId"
+          class="max-w-full break-all whitespace-pre-wrap text-xs leading-7 text-red-400"
+        >
+          {{ t(block.content || '') }}
+        </div>
+      </div>
     </div>
     <div v-if="errorExplanation" class="mt-2 text-red-400 font-medium">
       {{ t('common.error.causeOfError') }} {{ t(errorExplanation) }}
@@ -18,13 +46,16 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
-import { computed } from 'vue'
-import { AssistantMessageBlock } from '@shared/chat'
+import { computed, ref, useId } from 'vue'
+import type { DisplayAssistantMessageBlock } from '@/features/chat-page/model/displayMessage'
 const { t } = useI18n()
 
 const props = defineProps<{
-  block: AssistantMessageBlock
+  block: DisplayAssistantMessageBlock
 }>()
+
+const isExpanded = ref(false)
+const detailsId = `message-error-details-${useId()}`
 
 const errorExplanation = computed(() => {
   const content = props.block.content || ''

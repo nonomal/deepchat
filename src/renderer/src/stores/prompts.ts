@@ -1,63 +1,69 @@
+import { computed } from 'vue'
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
-import { usePresenter } from '@/composables/usePresenter'
-import { Prompt } from '@shared/presenter'
+import { useIpcQuery } from '@/composables/useIpcQuery'
+import { useIpcMutation } from '@/composables/useIpcMutation'
+import { type EntryKey, type UseQueryReturn } from '@pinia/colada'
+import type { Prompt } from '@shared/types/prompt'
+import { createConfigClient } from '../../api/ConfigClient'
 
 export const usePromptsStore = defineStore('prompts', () => {
-  const configP = usePresenter('configPresenter')
-  const prompts = ref<Prompt[]>([])
+  const configClient = createConfigClient()
+  const customPromptsKey: EntryKey = ['config', 'customPrompts'] as const
 
-  // 加载自定义 prompts
-  const loadPrompts = async () => {
-    try {
-      prompts.value = await configP.getCustomPrompts()
-    } catch (error) {
-      console.error('Failed to load custom prompts:', error)
+  const promptsQuery = useIpcQuery({
+    key: () => customPromptsKey,
+    query: () => configClient.getCustomPrompts(),
+    staleTime: 60_000,
+    gcTime: 300_000
+  }) as UseQueryReturn<Prompt[]>
+
+  const prompts = computed(() => promptsQuery.data.value ?? [])
+
+  const loadPrompts = async (): Promise<Prompt[]> => {
+    const state = await promptsQuery.refetch(true)
+    if (state.status !== 'success') {
+      throw state.error
     }
+    return state.data
   }
 
-  // 保存自定义 prompts
-  const savePrompts = async (newPrompts: Prompt[]) => {
-    try {
-      await configP.setCustomPrompts(newPrompts)
-      prompts.value = newPrompts
-    } catch (error) {
-      console.error('Failed to save custom prompts:', error)
-      throw error
-    }
+  const invalidateCustomPrompts = (): EntryKey[] => [customPromptsKey]
+
+  const savePromptsMutation = useIpcMutation({
+    mutation: async (prompts: Prompt[]) => (await configClient.setCustomPrompts(prompts)).prompts,
+    invalidateQueries: () => invalidateCustomPrompts()
+  })
+
+  const savePrompts = async (newPrompts: Prompt[]): Promise<Prompt[]> => {
+    return (await savePromptsMutation.mutateAsync([newPrompts])) as Prompt[]
   }
 
-  // 添加单个 prompt
-  const addPrompt = async (prompt: Prompt) => {
-    try {
-      await configP.addCustomPrompt(prompt)
-      await loadPrompts()
-    } catch (error) {
-      console.error('Failed to add custom prompt:', error)
-      throw error
-    }
+  const addPromptMutation = useIpcMutation({
+    mutation: async (prompt: Prompt) => (await configClient.addCustomPrompt(prompt)).prompts,
+    invalidateQueries: () => invalidateCustomPrompts()
+  })
+
+  const addPrompt = async (prompt: Prompt): Promise<Prompt[]> => {
+    return (await addPromptMutation.mutateAsync([prompt])) as Prompt[]
   }
 
-  // 更新单个 prompt
-  const updatePrompt = async (promptId: string, updates: Partial<Prompt>) => {
-    try {
-      await configP.updateCustomPrompt(promptId, updates)
-      await loadPrompts()
-    } catch (error) {
-      console.error('Failed to update custom prompt:', error)
-      throw error
-    }
+  const updatePromptMutation = useIpcMutation({
+    mutation: async (promptId: string, updates: Partial<Prompt>) =>
+      (await configClient.updateCustomPrompt(promptId, updates)).prompts,
+    invalidateQueries: () => invalidateCustomPrompts()
+  })
+
+  const updatePrompt = async (promptId: string, updates: Partial<Prompt>): Promise<Prompt[]> => {
+    return (await updatePromptMutation.mutateAsync([promptId, updates])) as Prompt[]
   }
 
-  // 删除单个 prompt
-  const deletePrompt = async (promptId: string) => {
-    try {
-      await configP.deleteCustomPrompt(promptId)
-      await loadPrompts()
-    } catch (error) {
-      console.error('Failed to delete custom prompt:', error)
-      throw error
-    }
+  const deletePromptMutation = useIpcMutation({
+    mutation: async (promptId: string) => (await configClient.deleteCustomPrompt(promptId)).prompts,
+    invalidateQueries: () => invalidateCustomPrompts()
+  })
+
+  const deletePrompt = async (promptId: string): Promise<Prompt[]> => {
+    return (await deletePromptMutation.mutateAsync([promptId])) as Prompt[]
   }
 
   return {

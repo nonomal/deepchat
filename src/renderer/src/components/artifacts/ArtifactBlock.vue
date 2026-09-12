@@ -6,9 +6,7 @@
           {{ block.artifact?.title }}
         </h3>
         <div class="flex items-center gap-2">
-          <Button variant="ghost" size="icon" @click="handleCopy">
-            <Icon icon="lucide:copy" class="h-4 w-4" />
-          </Button>
+          <DcCopyButton :copy-text="props.block.content" />
         </div>
       </div>
       <component
@@ -23,8 +21,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Button } from '@/components/ui/button'
-import { Icon } from '@iconify/vue'
+import { DcCopyButton } from '@dc-ui/components'
 import CodeArtifact from './CodeArtifact.vue'
 import MarkdownArtifact from './MarkdownArtifact.vue'
 import HTMLArtifact from './HTMLArtifact.vue'
@@ -81,10 +78,4 @@ const artifactClass = computed(() => {
       return ''
   }
 })
-
-const handleCopy = () => {
-  if (props.block.content) {
-    window.api.copyText(props.block.content)
-  }
-}
 </script>

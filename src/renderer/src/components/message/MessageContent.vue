@@ -8,11 +8,11 @@
       <span
         v-else-if="block.type === 'mention'"
         class="cursor-pointer px-1.5 py-0.5 text-xs rounded-md bg-blue-200/80 dark:bg-secondary text-foreground inline-flex items-center gap-1 max-w-64 align-sub truncate"
-        :title="block.content"
+        :title="getMentionTitle(block)"
         @click="handleMentionClick(block)"
       >
-        <Icon :icon="getMentionIcon(block.category)" class="w-3 h-3 flex-shrink-0" />
-        <span class="truncate">{{ block.category === 'prompts' ? block.id : block.content }}</span>
+        <Icon :icon="getMentionIcon(block.category)" class="w-3 h-3 shrink-0" />
+        <span class="truncate">{{ getVisibleMentionLabel(block) }}</span>
       </span>
 
       <!-- 代码块 -->
@@ -22,6 +22,25 @@
       >
         {{ block.content }}
       </code>
+
+      <!-- Skill chip -->
+      <span
+        v-else-if="block.type === 'skill'"
+        class="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs text-primary align-middle"
+        data-testid="user-message-inline-skill"
+      >
+        <Icon icon="lucide:sparkles" class="h-3 w-3 shrink-0" />
+        <span class="truncate max-w-[160px]">{{ block.skillName }}</span>
+      </span>
+
+      <!-- File chip -->
+      <ChatAttachmentItem
+        v-else-if="block.type === 'file'"
+        :file="getBlockFile(block)"
+        compact
+        data-testid="user-message-inline-file"
+        @click="emit('fileClick', block.filePath)"
+      />
     </template>
   </div>
 </template>
@@ -30,20 +49,44 @@
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import type {
-  UserMessageTextBlock,
-  UserMessageMentionBlock,
-  UserMessageCodeBlock
-} from '@shared/chat'
+  DisplayUserMessageCodeBlock,
+  DisplayUserMessageFileBlock,
+  DisplayUserMessageMentionBlock,
+  DisplayUserMessageSkillBlock,
+  DisplayUserMessageTextBlock
+} from '@/features/chat-page/model/displayMessage'
+import { getVisibleMentionLabel } from '@/features/chat-page/model/displayUserMessageText'
 import { useLanguageStore } from '@/stores/language'
+import ChatAttachmentItem from '@/components/chat/ChatAttachmentItem.vue'
 
-type ContentBlock = UserMessageTextBlock | UserMessageMentionBlock | UserMessageCodeBlock
+const MENTION_ICON_MAP: Record<string, string> = {
+  context: 'lucide:quote',
+  prompts: 'lucide:message-square-quote',
+  files: 'lucide:file-text',
+  tools: 'lucide:wrench',
+  skills: 'lucide:sparkles',
+  users: 'lucide:user',
+  channels: 'lucide:hash',
+  projects: 'lucide:folder',
+  documents: 'lucide:file-text',
+  resources: 'lucide:database',
+  default: 'lucide:at-sign'
+}
+
+type ContentBlock =
+  | DisplayUserMessageTextBlock
+  | DisplayUserMessageMentionBlock
+  | DisplayUserMessageCodeBlock
+  | DisplayUserMessageSkillBlock
+  | DisplayUserMessageFileBlock
 
 const props = defineProps<{
   content: ContentBlock[]
 }>()
 
 const emit = defineEmits<{
-  mentionClick: [block: UserMessageMentionBlock]
+  mentionClick: [block: DisplayUserMessageMentionBlock]
+  fileClick: [filePath: string]
 }>()
 const langStore = useLanguageStore()
 // 计算属性：处理内容块
@@ -52,24 +95,29 @@ const contentBlocks = computed(() => {
 })
 
 // 处理 mention 点击事件
-const handleMentionClick = (block: UserMessageMentionBlock) => {
+const handleMentionClick = (block: DisplayUserMessageMentionBlock) => {
   emit('mentionClick', block)
 }
 
 // 根据 category 获取对应的图标
 const getMentionIcon = (category: string) => {
-  const iconMap: Record<string, string> = {
-    prompts: 'lucide:message-square-quote',
-    files: 'lucide:file-text',
-    tools: 'lucide:wrench',
-    users: 'lucide:user',
-    channels: 'lucide:hash',
-    projects: 'lucide:folder',
-    documents: 'lucide:file-text',
-    resources: 'lucide:database',
-    default: 'lucide:at-sign'
-  }
+  return MENTION_ICON_MAP[category] || MENTION_ICON_MAP.default
+}
 
-  return iconMap[category] || iconMap.default
+const getMentionTitle = (block: DisplayUserMessageMentionBlock) => {
+  if (block.category === 'context') {
+    return block.id || ''
+  }
+  return block.content
+}
+
+const getBlockFile = (block: DisplayUserMessageFileBlock) => {
+  return (
+    block.file ?? {
+      name: block.fileName,
+      path: block.filePath,
+      mimeType: block.mimeType
+    }
+  )
 }
 </script>

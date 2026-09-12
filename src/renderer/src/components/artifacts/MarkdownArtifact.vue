@@ -1,17 +1,18 @@
 <template>
-  <div
-    ref="messageBlock"
-    class="markdown-content-wrapper relative w-full px-4 pb-8 artifact-dialog-content"
-  >
-    <MarkdownRenderer :content="props.block.content || ''" @copy="handleCopyClick" />
+  <div class="markdown-content-wrapper relative w-full px-4 pb-8 artifact-dialog-content">
+    <MarkdownRenderer
+      :content="props.block.content || ''"
+      :final="true"
+      :smooth-streaming="false"
+      :virtualize-nodes="false"
+      :link-context="{ source: 'artifact' }"
+      @copy="handleCopyClick"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
 import MarkdownRenderer from '@/components/markdown/MarkdownRenderer.vue'
-
-const messageBlock = ref<HTMLDivElement>()
 
 const props = defineProps<{
   block: {
@@ -30,10 +31,20 @@ const handleCopyClick = () => {
 </script>
 
 <style>
+@reference '../../assets/style.css';
+
 .markdown-content-wrapper {
-  @apply leading-7;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  line-height: 1.75rem;
+  font-family: var(
+    --dc-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif
+  );
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

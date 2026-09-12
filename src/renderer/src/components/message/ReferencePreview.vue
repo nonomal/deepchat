@@ -2,7 +2,8 @@
   <div
     v-if="show"
     ref="previewEl"
-    class="reference-preview fixed z-50 max-w-[384px] bg-card rounded-lg shadow-lg p-3 sm:p-4"
+    class="reference-preview fixed max-w-[384px] bg-card rounded-lg shadow-lg p-3 sm:p-4"
+    style="z-index: var(--dc-z-popover)"
     :style="positionStyle"
   >
     <!-- 内容区域 -->
@@ -36,7 +37,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
-import { SearchResult } from '@shared/presenter'
+import type { SearchResult } from '@shared/types/core/search'
 
 const props = defineProps<{
   show: boolean

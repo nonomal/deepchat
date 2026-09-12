@@ -33,5 +33,47 @@
     "getStarted": "Commencer",
     "next": "Suivant",
     "back": "Retour"
+  },
+  "page": {
+    "title": "Bienvenue dans DeepChat Agent",
+    "description": "Connectez un fournisseur de modèles pour commencer",
+    "guide": {
+      "title": "Guide de configuration",
+      "description": "Étape actuelle : {step}",
+      "or": "ou",
+      "coreProgress": "Progression de la configuration principale",
+      "optional": "Étapes facultatives",
+      "actions": {
+        "continueSetup": "Continuer la configuration",
+        "goToChat": "Aller au chat"
+      },
+      "steps": {
+        "provider": "Fournisseur",
+        "first-chat": "Premier chat",
+        "switch-model": "Changer de modèle",
+        "mcp": "MCP",
+        "skills": "Compétences",
+        "plugins": "Plugins"
+      }
+    },
+    "browseProviders": "Parcourir tous les fournisseurs...",
+    "connectAgent": "ou connecter un agent",
+    "acpTitle": "Configurer un agent ACP",
+    "acpDescription": "Claude Code, Codex, Kimi ou le vôtre",
+    "providers": {
+      "claude": "Claude",
+      "openai": "OpenAI",
+      "deepseek": "DeepSeek",
+      "gemini": "Gemini",
+      "ollama": "Ollama",
+      "openrouter": "OpenRouter"
+    },
+    "importProviders": "Importer depuis d’autres agents"
+  },
+  "agentPage": {
+    "title": "Choisissez un agent pour commencer à créer",
+    "deepchatType": "Agent DeepChat",
+    "acpType": "Agent ACP",
+    "manageAgents": "Gérer les agents DeepChat"
   }
 }

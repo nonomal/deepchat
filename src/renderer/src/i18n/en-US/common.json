@@ -1,4 +1,30 @@
 {
+  "skipToContent": "Skip to content",
+  "notifications": {
+    "label": "Notifications",
+    "actionFailed": "Action failed. Try again.",
+    "entities": "{count} affected",
+    "occurrences": "{count} occurrences",
+    "pending": "{count} more waiting",
+    "mcpConnectionFailed": {
+      "title": "Couldn’t connect to {serverName}",
+      "description": "Check the server settings and try again."
+    },
+    "mcpToolListFailed": {
+      "title": "Couldn’t load tools from {serverName}",
+      "description": "The server is connected, but its tools are unavailable."
+    },
+    "providerDeeplinkFailed": {
+      "title": "Couldn’t open provider setup",
+      "reasons": {
+        "unsupported-version": "This link version isn’t supported.",
+        "invalid-payload": "This provider link is invalid.",
+        "provider-not-found": "The linked provider couldn’t be found.",
+        "unsupported-provider": "This provider isn’t supported.",
+        "settings-unavailable": "Provider settings couldn’t be opened."
+      }
+    }
+  },
   "enabled": "Enabled",
   "disabled": "Disabled",
   "loading": "Loading...",
@@ -10,13 +36,18 @@
   "copyFailedDesc": "Failed to copy content to clipboard",
   "copyCode": "Copy Code",
   "copy": "Copy",
+  "copied": "Copied",
   "paste": "Paste",
   "export": "Export",
   "newChat": "New Chat",
   "newTopic": "New Topic",
   "cancel": "Cancel",
+  "retry": "Retry",
   "confirm": "Confirm",
   "close": "Close",
+  "open": "Open",
+  "next": "Next",
+  "back": "Back",
   "error": {
     "requestFailed": "Request failed...",
     "createChatFailed": "Failed to create chat",
@@ -39,7 +70,8 @@
     "error502": "Gateway error, the service might be unstable, please try again later",
     "error503": "Service unavailable, the service might be unstable, please try again later",
     "error504": "Request timeout, the service might be unstable or there might be network issues, please check proxy settings and try again",
-    "operationFailed": "Operation failed"
+    "operationFailed": "Operation failed",
+    "invalidQuestionRequest": "Invalid question request"
   },
   "resetDataConfirmTitle": "Reset All Data?",
   "resetDataConfirmDescription": "This will reset all your data to default settings. This action cannot be undone.",
@@ -66,9 +98,74 @@
   "collapse": "Collapse",
   "expand": "Expand",
   "image": "picture",
+  "noContent": "No content",
+  "preview": "Preview",
+  "source": "Source",
+  "more": "More",
+  "decrease": "Decrease",
+  "increase": "Increase",
+  "fontSmaller": "Smaller font",
+  "fontReset": "Reset font",
+  "fontLarger": "Larger font",
+  "zoomIn": "Zoom in",
+  "zoomOut": "Zoom out",
+  "resetZoom": "Reset zoom",
   "add": "Add",
   "reset": "Reset",
   "format": "Format",
   "edit": "Edit",
-  "delete": "Delete"
+  "delete": "Delete",
+  "save": "Save",
+  "clear": "Clear",
+  "saved": "Saved",
+  "unknownError": "Unknown error",
+  "testing": "Testing in progress",
+  "saving": "Saving",
+  "scrollLeft": "Scroll left",
+  "scrollRight": "Scroll right",
+  "history": "History",
+  "minimize": "Minimize",
+  "maximize": "Maximize",
+  "showValue": "Show",
+  "hideValue": "Hide",
+  "scrollToBottom": "Scroll to bottom",
+  "restore": "Restore",
+  "browser": {
+    "back": "Back",
+    "forward": "Forward",
+    "reload": "Reload",
+    "addressLabel": "Address bar",
+    "addressPlaceholder": "Enter a URL",
+    "enterUrlToStart": "Enter a URL to start browsing",
+    "enterUrlDescription": "Type a URL in the address bar above to visit a website",
+    "name": "Yo Browser",
+    "enterContent": "Enter webpage",
+    "returnFocus": "F6 returns to browser controls"
+  },
+  "size": {
+    "bytes": "{count} bytes"
+  },
+  "time": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "lastWeek": "Last week",
+    "older": "Older"
+  },
+  "project": {
+    "select": "Select project",
+    "none": "No project",
+    "recent": "Recent projects",
+    "openFolder": "Open folder..."
+  },
+  "diff": {
+    "oldLine": "Old line",
+    "newLine": "New line",
+    "change": "Change",
+    "content": "Content",
+    "add": "Added",
+    "del": "Removed",
+    "context": "Unchanged",
+    "hunk": "Change range",
+    "meta": "Metadata"
+  }
 }

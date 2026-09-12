@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Badge } from '@/components/ui/badge'
-import { Switch } from '@/components/ui/switch'
+import { DcButton } from '@dc-ui/components/button'
+import { DcStatusPill } from '@dc-ui/components/status-pill'
+import { DcTooltip } from '@dc-ui/components/tooltip'
+import { Switch } from '@shadcn/components/ui/switch'
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator
-} from '@/components/ui/dropdown-menu'
+} from '@shadcn/components/ui/dropdown-menu'
+import { DcDropdownActionItem } from '@dc-ui/components/dropdown-action-item'
 import { useI18n } from 'vue-i18n'
 import { computed, ref, nextTick, onMounted, watch } from 'vue'
-import { Separator } from '@/components/ui/separator'
+import { Separator } from '@shadcn/components/ui/separator'
+import { Spinner } from '@shadcn/components/ui/spinner'
+import type { McpServerAuthStatus } from '@shared/types/mcp'
+import type { McpServerLifecycleStatus } from '@shared/types/core/mcp'
 
 interface ServerInfo {
   name: string
@@ -21,16 +24,21 @@ interface ServerInfo {
   descriptions: string
   command: string
   args: string[]
+  enabled: boolean
   isRunning: boolean
-  isDefault: boolean
+  lifecycleStatus?: McpServerLifecycleStatus
   type?: string
   baseUrl?: string
   errorMessage?: string
+  authStatus?: McpServerAuthStatus
+  source?: string
+  sourceId?: string
 }
 
 interface Props {
   server: ServerInfo
   isBuiltIn?: boolean
+  isManaged?: boolean
   isLoading?: boolean
   disabled?: boolean
   toolsCount?: number
@@ -40,7 +48,6 @@ interface Props {
 
 interface Emits {
   (e: 'toggle'): void
-  (e: 'toggleDefault'): void
   (e: 'edit'): void
   (e: 'remove'): void
   (e: 'viewLogs'): void
@@ -48,6 +55,8 @@ interface Emits {
   (e: 'viewTools'): void
   (e: 'viewPrompts'): void
   (e: 'viewResources'): void
+  (e: 'authenticate'): void
+  (e: 'diagnostics'): void
 }
 
 const props = defineProps<Props>()
@@ -69,10 +78,26 @@ const getLocalizedServerDesc = (serverName: string, fallbackDesc: string) => {
 // 计算服务器状态
 const serverStatus = computed(() => {
   if (props.isLoading) return 'loading'
-  if (props.server.errorMessage) return 'error'
-  if (props.server.isRunning) return 'running'
+  if (props.server.authStatus?.state === 'authenticating') return 'loading'
+  if (props.server.authStatus?.state === 'required') return 'auth-required'
+  if (props.server.authStatus?.state === 'error') return 'auth-error'
+  if (['connecting', 'timeout', 'retrying'].includes(props.server.lifecycleStatus ?? '')) {
+    return 'loading'
+  }
+  if (props.server.lifecycleStatus === 'failed' || props.server.errorMessage) return 'error'
+  if (props.server.lifecycleStatus === 'connected' || props.server.isRunning) return 'running'
   return 'stopped'
 })
+
+const showAuthenticateButton = computed(() => {
+  const auth = props.server.authStatus
+  if (!auth || !['required', 'error', 'authenticating'].includes(auth.state)) {
+    return false
+  }
+  return auth.mode === 'interactive' || auth.credential?.configured === true
+})
+
+const isAuthenticating = computed(() => props.server.authStatus?.state === 'authenticating')
 
 // 计算状态样式
 const statusConfig = computed(() => {
@@ -88,6 +113,18 @@ const statusConfig = computed(() => {
         dot: 'bg-blue-500 animate-pulse',
         text: t('settings.mcp.starting'),
         color: 'text-blue-600 dark:text-blue-400'
+      }
+    case 'auth-required':
+      return {
+        dot: 'bg-yellow-500',
+        text: t('settings.mcp.authRequired'),
+        color: 'text-yellow-600 dark:text-yellow-400'
+      }
+    case 'auth-error':
+      return {
+        dot: 'bg-red-500',
+        text: t('settings.mcp.authFailed'),
+        color: 'text-red-600 dark:text-red-400'
       }
     case 'error':
       return {
@@ -110,6 +147,8 @@ const fullDescription = computed(() => {
     ? getLocalizedServerDesc(props.server.name, props.server.descriptions)
     : props.server.descriptions
 })
+
+const canEdit = computed(() => !props.isManaged)
 
 // 检查文本是否溢出
 const checkTextOverflow = async () => {
@@ -135,14 +174,14 @@ watch(watchDescription, () => {
 
 <template>
   <div
-    class="bg-card shadow-sm border rounded-lg overflow-hidden transition-all duration-200 hover:shadow-md hover:border-primary group"
+    class="bg-card flex flex-col shadow-sm border rounded-lg overflow-hidden transition-all duration-200 hover:shadow-md group"
   >
-    <div class="px-4 py-2">
+    <div class="px-4 py-2 flex-1">
       <!-- 头部：图标、名称、状态、菜单 -->
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center space-x-2 flex-1 min-w-0">
+      <div class="flex items-center justify-between mb-1">
+        <div class="flex items-center gap-1.5 flex-1 min-w-0">
           <!-- 服务器图标 -->
-          <div class="text-lg flex-shrink-0">{{ server.icons }}</div>
+          <span class="shrink-0">{{ server.icons }}</span>
 
           <!-- 名称 -->
           <h3 class="text-sm font-bold truncate flex-1">
@@ -153,152 +192,142 @@ watch(watchDescription, () => {
         <!-- 操作菜单 -->
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
-            <Button
+            <DcButton
               variant="ghost"
               size="icon"
-              class="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+              class="h-6 w-6 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0"
+              :tooltip="t('common.more')"
+              :aria-label="`${t('common.more')}: ${server.name}`"
+              @click.stop
             >
               <Icon icon="lucide:more-horizontal" class="h-3 w-3" />
-            </Button>
+            </DcButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem :disabled="disabled" @click="$emit('edit')">
-              <Icon icon="lucide:edit-3" class="h-4 w-4 mr-2" />
-              {{ t('settings.mcp.editServer') }}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem :disabled="disabled" @click="$emit('toggleDefault')">
-              <Icon
-                :icon="server.isDefault ? 'lucide:power-off' : 'lucide:power'"
-                class="h-4 w-4 mr-2"
-              />
-              {{
-                server.isDefault ? t('settings.mcp.removeDefault') : t('settings.mcp.setAsDefault')
-              }}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator v-if="!isBuiltIn" />
-            <DropdownMenuItem
-              v-if="!isBuiltIn"
+            <DcDropdownActionItem
+              icon="lucide:activity"
+              :label="t('settings.mcp.diagnostics.title')"
+              @select="$emit('diagnostics')"
+            />
+            <DropdownMenuSeparator v-if="canEdit || !isBuiltIn" />
+            <DcDropdownActionItem
+              v-if="canEdit"
+              icon="lucide:edit-3"
+              :label="t('settings.mcp.editServer')"
               :disabled="disabled"
-              class="text-destructive focus:text-destructive"
-              @click="$emit('remove')"
-            >
-              <Icon icon="lucide:trash-2" class="h-4 w-4 mr-2" />
-              {{ t('settings.mcp.removeServer') }}
-            </DropdownMenuItem>
+              @select="$emit('edit')"
+            />
+            <DropdownMenuSeparator v-if="canEdit && !isBuiltIn" />
+            <DcDropdownActionItem
+              v-if="!isBuiltIn"
+              icon="lucide:trash-2"
+              :label="t('settings.mcp.removeServer')"
+              :disabled="disabled"
+              danger
+              @select="$emit('remove')"
+            />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
 
-      <!-- 类型和标识 -->
-      <div class="flex items-center space-x-2 mb-2">
-        <!-- 服务器类型 -->
-        <Badge variant="outline" class="text-xs h-4 px-1.5">
-          {{ server.type === 'http' ? 'HTTP' : 'Local' }}
-        </Badge>
-
-        <!-- 默认启动标识 -->
-        <Badge v-if="server.isDefault" variant="default" class="text-xs h-4 px-1.5">
-          {{ t('settings.mcp.default') }}
-        </Badge>
-      </div>
-
       <!-- 描述 -->
-      <div class="mb-2">
-        <p
-          ref="descriptionRef"
-          class="text-xs text-secondary-foreground cursor-pointer overflow-hidden leading-5 break-all"
-          :class="[
-            !isDescriptionExpanded ? 'line-clamp-1' : '',
-            needsExpansion ? 'hover:text-foreground transition-colors' : ''
-          ]"
-          style="min-height: 1rem"
-          @click="needsExpansion && (isDescriptionExpanded = !isDescriptionExpanded)"
-        >
-          {{ fullDescription }}
-        </p>
-        <Button
-          variant="link"
-          size="sm"
-          class="h-auto p-0 text-xs mt-1 hover:no-underline gap-1"
-          :class="[needsExpansion ? 'opacity-100' : 'opacity-0 pointer-events-none']"
-          @click="isDescriptionExpanded = !isDescriptionExpanded"
-        >
-          <Icon
-            :icon="isDescriptionExpanded ? 'lucide:chevron-up' : 'lucide:chevron-down'"
-            class="h-3 w-3"
-          />
-          {{ isDescriptionExpanded ? t('common.collapse') : t('common.expand') }}
-        </Button>
-      </div>
+      <p
+        ref="descriptionRef"
+        class="text-xs text-secondary-foreground overflow-hidden leading-5 break-all mb-2"
+        :class="[
+          !isDescriptionExpanded ? 'line-clamp-1' : '',
+          needsExpansion ? 'hover:text-foreground transition-colors' : ''
+        ]"
+        style="min-height: 1rem"
+        @click.stop="needsExpansion && (isDescriptionExpanded = !isDescriptionExpanded)"
+      >
+        {{ fullDescription }}
+      </p>
 
       <!-- 底部控制 -->
       <div class="flex items-center justify-between">
         <!-- 状态 -->
         <div class="flex items-center space-x-1.5">
-          <div :class="['w-2 h-2 rounded-full', statusConfig.dot]" />
-          <span :class="['text-xs', statusConfig.color]">
-            {{ statusConfig.text }}
-          </span>
+          <DcStatusPill
+            :status="serverStatus"
+            :label="statusConfig.text"
+            :pulse="serverStatus === 'loading'"
+          />
 
+          <span v-if="server.errorMessage" class="sr-only">{{ server.errorMessage }}</span>
+          <span v-if="server.authStatus?.error" class="sr-only">{{ server.authStatus.error }}</span>
           <!-- 错误提示 -->
-          <TooltipProvider v-if="server.errorMessage">
-            <Tooltip>
-              <TooltipTrigger>
-                <Icon icon="lucide:alert-circle" class="w-3 h-3 text-red-500" />
-              </TooltipTrigger>
-              <TooltipContent>
-                <p class="text-xs max-w-xs">{{ server.errorMessage }}</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <DcTooltip v-if="server.errorMessage" :content="server.errorMessage" side="top">
+            <Icon icon="lucide:alert-circle" class="w-3 h-3 text-red-500" />
+          </DcTooltip>
+
+          <DcTooltip v-if="server.authStatus?.error" :content="server.authStatus.error" side="top">
+            <Icon icon="lucide:key-round" class="w-3 h-3 text-yellow-500" />
+          </DcTooltip>
         </div>
 
-        <div class="flex items-center space-x-2">
+        <!-- 开关 -->
+        <div class="flex shrink-0 items-center gap-2" @click.stop @keydown.stop>
+          <DcButton
+            v-if="showAuthenticateButton"
+            variant="outline"
+            size="sm"
+            class="h-6 px-2 text-[11px]"
+            :disabled="disabled || isAuthenticating"
+            @click.stop="$emit('authenticate')"
+          >
+            <Spinner v-if="isAuthenticating" class="size-3" data-icon="inline-start" />
+            <Icon v-else icon="lucide:key-round" class="size-3" data-icon="inline-start" />
+            {{ t('settings.mcp.authenticate') }}
+          </DcButton>
           <Switch
-            :checked="server.isRunning"
+            :model-value="server.enabled"
+            :aria-label="isBuiltIn ? getLocalizedServerName(server.name) : server.name"
             :disabled="disabled || isLoading"
-            @update:checked="$emit('toggle')"
+            @update:model-value="$emit('toggle')"
           />
         </div>
       </div>
     </div>
-    <div class="flex flex-row bg-muted h-9 items-center">
+    <div class="flex flex-row border-t h-9 items-center">
       <!-- 工具按钮 -->
-      <Button
+      <DcButton
         v-if="toolsCount !== undefined"
+        :aria-label="`${server.name}: ${t('settings.mcp.tabs.tools')} (${toolsCount})`"
         variant="ghost"
         class="h-full flex-1 text-xs hover:bg-secondary rounded-none"
         :disabled="disabled || toolsCount === 0"
-        @click="$emit('viewTools')"
+        @click.stop="$emit('viewTools')"
       >
         <Icon icon="lucide:wrench" class="h-3 w-3 mr-1" />
         {{ toolsCount }}
-      </Button>
+      </DcButton>
       <!-- 提示词按钮 -->
       <Separator orientation="vertical" class="h-5" />
-      <Button
+      <DcButton
         v-if="promptsCount !== undefined"
+        :aria-label="`${server.name}: ${t('settings.mcp.tabs.prompts')} (${promptsCount})`"
         variant="ghost"
         class="h-full flex-1 text-xs hover:bg-secondary rounded-none"
         :disabled="disabled || promptsCount === 0"
-        @click="$emit('viewPrompts')"
+        @click.stop="$emit('viewPrompts')"
       >
         <Icon icon="lucide:message-square-quote" class="h-3 w-3 mr-1" />
         {{ promptsCount }}
-      </Button>
+      </DcButton>
       <Separator orientation="vertical" class="h-5" />
       <!-- 资源按钮 -->
-      <Button
+      <DcButton
         v-if="resourcesCount !== undefined"
+        :aria-label="`${server.name}: ${t('settings.mcp.tabs.resources')} (${resourcesCount})`"
         variant="ghost"
         class="h-full flex-1 text-xs hover:bg-secondary rounded-none"
         :disabled="disabled || resourcesCount === 0"
-        @click="$emit('viewResources')"
+        @click.stop="$emit('viewResources')"
       >
         <Icon icon="lucide:folder" class="h-3 w-3 mr-1" />
         {{ resourcesCount }}
-      </Button>
+      </DcButton>
     </div>
   </div>
 </template>
